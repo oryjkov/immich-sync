@@ -1,21 +1,24 @@
 use dotenvy::dotenv;
 use std::env;
+use std::fs;
 
 use openapi::apis::assets_api;
 use openapi::apis::configuration;
 
+use oauth2::{StandardTokenResponse, TokenResponse};
+
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
+    let auth_file = "auth_token.json";
+    let token: StandardTokenResponse<oauth2::EmptyExtraTokenFields, oauth2::basic::BasicTokenType> =
+        serde_json::from_str(&(fs::read_to_string(auth_file)?))?;
+
     let gp_api_config = gphotos_api::apis::configuration::Configuration {
-        oauth_access_token: Some("".to_string()),
+        oauth_access_token: Some(token.access_token().secret().clone()),
         ..Default::default()
     };
-    let r = gphotos_api::apis::default_api::list_albums(&gp_api_config, Some(50), None).await;
-    if r.is_err() {
-        println!("gp api response: {:?}", r);
-        return;
-    }
-    println!("got {} albums", r.unwrap().albums.map_or(0, |a| a.len()));
+    let r = gphotos_api::apis::default_api::list_albums(&gp_api_config, Some(50), None).await?;
+    println!("got {} albums", r.albums.map_or(0, |a| a.len()));
 
     dotenv().expect(".env file not found");
 
@@ -34,4 +37,6 @@ async fn main() {
         .await
         .unwrap();
     println!("{:?}", r[0]);
+
+    Ok(())
 }

@@ -156,12 +156,8 @@ async fn main() -> anyhow::Result<()> {
         .exchange_code(code)
         .set_pkce_verifier(pkce_code_verifier)
         .request_async(&http_client)
-        .await;
+        .await?;
 
-    println!("Google returned the following token:\n{token_response:?}\n");
-
-    // Revoke the obtained token
-    let token_response = token_response.unwrap();
     let token_ser = serde_json::to_string(&token_response)?;
     let auth_file = "auth_token.json";
     fs::write(auth_file, &token_ser)?;
