@@ -6,6 +6,17 @@ use openapi::apis::configuration;
 
 #[tokio::main]
 async fn main() {
+    let gp_api_config = gphotos_api::apis::configuration::Configuration {
+        oauth_access_token: Some("".to_string()),
+        ..Default::default()
+    };
+    let r = gphotos_api::apis::default_api::list_albums(&gp_api_config, Some(50), None).await;
+    if r.is_err() {
+        println!("gp api response: {:?}", r);
+        return;
+    }
+    println!("got {} albums", r.unwrap().albums.map_or(0, |a| a.len()));
+
     dotenv().expect(".env file not found");
 
     let mut api_config = configuration::Configuration::new();

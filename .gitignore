@@ -1,2 +1,4 @@
 /target
 .env
+auth_token.json
+client-secret.json

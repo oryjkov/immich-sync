@@ -1,0 +1,14 @@
+pub mod album;
+pub use self::album::Album;
+pub mod list_albums_response;
+pub use self::list_albums_response::ListAlbumsResponse;
+pub mod list_shared_albums_response;
+pub use self::list_shared_albums_response::ListSharedAlbumsResponse;
+pub mod media_item;
+pub use self::media_item::MediaItem;
+pub mod media_item_media_metadata;
+pub use self::media_item_media_metadata::MediaItemMediaMetadata;
+pub mod media_item_media_metadata_photo;
+pub use self::media_item_media_metadata_photo::MediaItemMediaMetadataPhoto;
+pub mod media_item_media_metadata_video;
+pub use self::media_item_media_metadata_video::MediaItemMediaMetadataVideo;

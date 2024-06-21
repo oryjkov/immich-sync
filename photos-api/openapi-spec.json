@@ -1,0 +1,343 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Google Photos API",
+    "version": "1.0.0",
+    "description": "API for accessing Google Photos functionalities."
+  },
+  "servers": [
+    {
+      "url": "https://photoslibrary.googleapis.com/v1"
+    }
+  ],
+  "paths": {
+    "/mediaItems/{mediaItemId}": {
+      "get": {
+        "summary": "Get media item metadata",
+        "operationId": "getMediaItem",
+        "parameters": [
+          {
+            "name": "mediaItemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "ID of the media item to retrieve metadata for."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media item metadata retrieved successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaItem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": ["https://www.googleapis.com/auth/photoslibrary.readonly"]
+          }
+        ]
+      }
+    },
+    "/mediaItems/{mediaItemId}/download": {
+      "get": {
+        "summary": "Download media item",
+        "operationId": "downloadMediaItem",
+        "parameters": [
+          {
+            "name": "mediaItemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "ID of the media item to download."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media item downloaded successfully.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": ["https://www.googleapis.com/auth/photoslibrary.readonly"]
+          }
+        ]
+      }
+    },
+    "/albums": {
+      "get": {
+        "summary": "List albums",
+        "operationId": "listAlbums",
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            },
+            "description": "Maximum number of albums to return."
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Token to retrieve the next page of results."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Albums listed successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListAlbumsResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": ["https://www.googleapis.com/auth/photoslibrary.readonly"]
+          }
+        ]
+      }
+    },
+    "/sharedAlbums": {
+      "get": {
+        "summary": "List shared albums",
+        "operationId": "listSharedAlbums",
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            },
+            "description": "Maximum number of shared albums to return."
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Token to retrieve the next page of results."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared albums listed successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListSharedAlbumsResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": ["https://www.googleapis.com/auth/photoslibrary.readonly"]
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "oauth2": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://accounts.google.com/o/oauth2/auth",
+            "tokenUrl": "https://oauth2.googleapis.com/token",
+            "scopes": {
+              "https://www.googleapis.com/auth/photoslibrary.readonly": "View your Google Photos library"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "MediaItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Identifier of the media item."
+          },
+          "description": {
+            "type": "string",
+            "description": "Description of the media item."
+          },
+          "productUrl": {
+            "type": "string",
+            "description": "URL to the media item."
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "Base URL to download the media item."
+          },
+          "mimeType": {
+            "type": "string",
+            "description": "MIME type of the media item."
+          },
+          "mediaMetadata": {
+            "type": "object",
+            "properties": {
+              "creationTime": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Creation time of the media item."
+              },
+              "width": {
+                "type": "string",
+                "description": "Width of the media item."
+              },
+              "height": {
+                "type": "string",
+                "description": "Height of the media item."
+              },
+              "photo": {
+                "type": "object",
+                "properties": {
+                  "cameraMake": {
+                    "type": "string",
+                    "description": "Camera make of the photo."
+                  },
+                  "cameraModel": {
+                    "type": "string",
+                    "description": "Camera model of the photo."
+                  },
+                  "focalLength": {
+                    "type": "number",
+                    "description": "Focal length of the photo."
+                  },
+                  "apertureFNumber": {
+                    "type": "number",
+                    "description": "Aperture f-number of the photo."
+                  },
+                  "isoEquivalent": {
+                    "type": "integer",
+                    "description": "ISO equivalent of the photo."
+                  },
+                  "exposureTime": {
+                    "type": "string",
+                    "description": "Exposure time of the photo."
+                  }
+                }
+              },
+              "video": {
+                "type": "object",
+                "properties": {
+                  "cameraMake": {
+                    "type": "string",
+                    "description": "Camera make of the video."
+                  },
+                  "cameraModel": {
+                    "type": "string",
+                    "description": "Camera model of the video."
+                  },
+                  "fps": {
+                    "type": "number",
+                    "description": "Frames per second of the video."
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "Processing status of the video."
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ListAlbumsResponse": {
+        "type": "object",
+        "properties": {
+          "albums": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Album"
+            }
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "Token to retrieve the next page of results."
+          }
+        }
+      },
+      "ListSharedAlbumsResponse": {
+        "type": "object",
+        "properties": {
+          "sharedAlbums": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Album"
+            }
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "Token to retrieve the next page of results."
+          }
+        }
+      },
+      "Album": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Identifier of the album."
+          },
+          "title": {
+            "type": "string",
+            "description": "Title of the album."
+          },
+          "productUrl": {
+            "type": "string",
+            "description": "URL to the album."
+          },
+          "isWriteable": {
+            "type": "boolean",
+            "description": "Indicates if the album is writable."
+          },
+          "mediaItemsCount": {
+            "type": "string",
+            "description": "Number of media items in the album."
+          },
+          "coverPhotoBaseUrl": {
+            "type": "string",
+            "description": "Base URL of the cover photo of the album."
+          },
+          "coverPhotoMediaItemId": {
+            "type": "string",
+            "description": "Identifier of the cover photo media item."
+          }
+        }
+      }
+    }
+  }
+}
+
