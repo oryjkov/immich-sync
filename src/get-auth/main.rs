@@ -27,13 +27,12 @@
 //! ...and follow the instructions.
 //!
 
+use oauth2::basic::BasicClient;
 use oauth2::reqwest;
-use oauth2::{basic::BasicClient, StandardRevocableToken, TokenResponse};
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl,
     RevocationUrl, Scope, TokenUrl,
 };
-use serde::Serialize;
 use url::Url;
 
 use std::io::{BufRead, BufReader, Write};
@@ -48,7 +47,6 @@ struct InstalledJs {
 #[derive(serde::Deserialize)]
 struct SecretJs {
     client_id: String,
-    project_id: String,
     auth_uri: String,
     token_uri: String,
     client_secret: String,
