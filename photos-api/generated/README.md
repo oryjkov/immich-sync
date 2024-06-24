@@ -29,6 +29,7 @@ Class | Method | HTTP request | Description
 *DefaultApi* | [**download_media_item**](docs/DefaultApi.md#download_media_item) | **GET** /mediaItems/{mediaItemId}/download | Download media item
 *DefaultApi* | [**get_media_item**](docs/DefaultApi.md#get_media_item) | **GET** /mediaItems/{mediaItemId} | Get media item metadata
 *DefaultApi* | [**list_albums**](docs/DefaultApi.md#list_albums) | **GET** /albums | List albums
+*DefaultApi* | [**list_media_items**](docs/DefaultApi.md#list_media_items) | **GET** /mediaItems | List all media items
 *DefaultApi* | [**list_shared_albums**](docs/DefaultApi.md#list_shared_albums) | **GET** /sharedAlbums | List shared albums
 
 
@@ -36,6 +37,7 @@ Class | Method | HTTP request | Description
 
  - [Album](docs/Album.md)
  - [ListAlbumsResponse](docs/ListAlbumsResponse.md)
+ - [ListMediaItemsResponse](docs/ListMediaItemsResponse.md)
  - [ListSharedAlbumsResponse](docs/ListSharedAlbumsResponse.md)
  - [MediaItem](docs/MediaItem.md)
  - [MediaItemMediaMetadata](docs/MediaItemMediaMetadata.md)

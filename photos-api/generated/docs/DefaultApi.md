@@ -7,6 +7,7 @@ Method | HTTP request | Description
 [**download_media_item**](DefaultApi.md#download_media_item) | **GET** /mediaItems/{mediaItemId}/download | Download media item
 [**get_media_item**](DefaultApi.md#get_media_item) | **GET** /mediaItems/{mediaItemId} | Get media item metadata
 [**list_albums**](DefaultApi.md#list_albums) | **GET** /albums | List albums
+[**list_media_items**](DefaultApi.md#list_media_items) | **GET** /mediaItems | List all media items
 [**list_shared_albums**](DefaultApi.md#list_shared_albums) | **GET** /sharedAlbums | List shared albums
 
 
@@ -83,6 +84,35 @@ Name | Type | Description  | Required | Notes
 ### Return type
 
 [**models::ListAlbumsResponse**](ListAlbumsResponse.md)
+
+### Authorization
+
+[oauth2](../README.md#oauth2)
+
+### HTTP request headers
+
+- **Content-Type**: Not defined
+- **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+
+## list_media_items
+
+> models::ListMediaItemsResponse list_media_items(page_size, page_token)
+List all media items
+
+### Parameters
+
+
+Name | Type | Description  | Required | Notes
+------------- | ------------- | ------------- | ------------- | -------------
+**page_size** | Option<**i32**> | Maximum number of media items to return. |  |[default to 25]
+**page_token** | Option<**String**> | Token to retrieve the next page of results. |  |
+
+### Return type
+
+[**models::ListMediaItemsResponse**](ListMediaItemsResponse.md)
 
 ### Authorization
 

@@ -2,6 +2,8 @@ pub mod album;
 pub use self::album::Album;
 pub mod list_albums_response;
 pub use self::list_albums_response::ListAlbumsResponse;
+pub mod list_media_items_response;
+pub use self::list_media_items_response::ListMediaItemsResponse;
 pub mod list_shared_albums_response;
 pub use self::list_shared_albums_response::ListSharedAlbumsResponse;
 pub mod media_item;

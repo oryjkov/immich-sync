@@ -1,11 +1,11 @@
 .gitignore
-.openapi-generator-ignore
 .travis.yml
 Cargo.toml
 README.md
 docs/Album.md
 docs/DefaultApi.md
 docs/ListAlbumsResponse.md
+docs/ListMediaItemsResponse.md
 docs/ListSharedAlbumsResponse.md
 docs/MediaItem.md
 docs/MediaItemMediaMetadata.md
@@ -18,6 +18,7 @@ src/apis/mod.rs
 src/lib.rs
 src/models/album.rs
 src/models/list_albums_response.rs
+src/models/list_media_items_response.rs
 src/models/list_shared_albums_response.rs
 src/models/media_item.rs
 src/models/media_item_media_metadata.rs

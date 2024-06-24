@@ -11,6 +11,48 @@
     }
   ],
   "paths": {
+    "/mediaItems": {
+      "get": {
+        "summary": "List all media items",
+        "operationId": "listMediaItems",
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 25
+            },
+            "description": "Maximum number of media items to return."
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Token to retrieve the next page of results."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media items listed successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListMediaItemsResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": ["https://www.googleapis.com/auth/photoslibrary.readonly"]
+          }
+        ]
+      }
+    },
     "/mediaItems/{mediaItemId}": {
       "get": {
         "summary": "Get media item metadata",
@@ -271,6 +313,10 @@
                 }
               }
             }
+          },
+          "filename": {
+            "type": "string",
+            "description": "filename of the original media item."
           }
         }
       },
@@ -296,6 +342,21 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Album"
+            }
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "Token to retrieve the next page of results."
+          }
+        }
+      },
+      "ListMediaItemsResponse": {
+        "type": "object",
+        "properties": {
+          "mediaItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaItem"
             }
           },
           "nextPageToken": {

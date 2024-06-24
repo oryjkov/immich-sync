@@ -30,6 +30,9 @@ pub struct MediaItem {
     pub mime_type: Option<String>,
     #[serde(rename = "mediaMetadata", skip_serializing_if = "Option::is_none")]
     pub media_metadata: Option<Box<models::MediaItemMediaMetadata>>,
+    /// filename of the original media item.
+    #[serde(rename = "filename", skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
 }
 
 impl MediaItem {
@@ -41,6 +44,7 @@ impl MediaItem {
             base_url: None,
             mime_type: None,
             media_metadata: None,
+            filename: None,
         }
     }
 }
