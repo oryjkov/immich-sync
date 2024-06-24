@@ -79,32 +79,45 @@ impl AuthToken {
     }
 }
 
-// struct GPClient {
-//     token: AuthToken,
-//     api_config: gphotos_api::apis::configuration::Configuration,
-// }
-// impl GPClient {
-//     fn albums_stream(&mut self) -> ResultsStream<String, gphotos_api::models::Album, _, _, _> {
-//         albums_stream = ResultsStream::new(|token: Option<String>| {
-//             let c = self.gp_api_config.clone();
-//             async move {
-//                 let r = gphotos_api::apis::default_api::list_albums(&c, Some(50), token.as_deref())
-//                     .await?;
-//
-//                 match r.albums {
-//                     None => Ok::<_, gphotos_api::apis::Error<ListAlbumsError>>(None),
-//                     Some(albums) => {
-//                         if albums.len() == 0 {
-//                             Ok(None)
-//                         } else {
-//                             Ok(Some(Page::new(albums.into(), r.next_page_token)))
-//                         }
-//                     }
-//                 }
-//             }
-//         })
-//     }
-// }
+struct GPClient {
+    token: AuthToken,
+    api_config: gphotos_api::apis::configuration::Configuration,
+}
+impl GPClient {
+    fn get_config(&self) -> gphotos_api::apis::configuration::Configuration {
+        gphotos_api::apis::configuration::Configuration {
+            oauth_access_token: Some(self.token.token.clone()),
+            ..self.api_config.clone()
+        }
+    }
+    fn albums_stream_fn(
+        &self, // api_config: &gphotos_api::apis::configuration::Configuration,
+    ) -> impl Stream<
+        Item = Result<
+            gphotos_api::models::Album,
+            gphotos_api::apis::Error<gphotos_api::apis::default_api::ListAlbumsError>,
+        >,
+    > + '_ {
+        try_stream! {
+            let mut token: Option<String> = None;
+            loop {
+                let r = gphotos_api::apis::default_api::list_albums(&self.get_config(), Some(50), token.as_deref()).await?;
+                match r.albums {
+                    Some(albums) => {
+                        for album in albums {
+                            yield album;
+                        }
+                    }
+                    None => break
+                }
+                token = r.next_page_token;
+                if token.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -127,34 +140,11 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    fn albums_stream_fn(
-        api_config: &gphotos_api::apis::configuration::Configuration,
-    ) -> impl Stream<
-        Item = Result<
-            gphotos_api::models::Album,
-            gphotos_api::apis::Error<gphotos_api::apis::default_api::ListAlbumsError>,
-        >,
-    > + '_ {
-        try_stream! {
-            let mut token: Option<String> = None;
-            loop {
-                let r = gphotos_api::apis::default_api::list_albums(api_config, Some(50), token.as_deref()).await?;
-                match r.albums {
-                    Some(albums) => {
-                        for album in albums {
-                            yield album;
-                        }
-                    }
-                    None => break
-                }
-                token = r.next_page_token;
-                if token.is_none() {
-                    break;
-                }
-            }
-        }
-    }
-    let s = albums_stream_fn(&gp_api_config);
+    let gpclient = GPClient {
+        token,
+        api_config: gp_api_config,
+    };
+    let s = gpclient.albums_stream_fn();
     pin_mut!(s);
     while let Some(album) = s.next().await {
         let album = album?;
