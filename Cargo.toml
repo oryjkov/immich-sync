@@ -14,7 +14,6 @@ path = "src/get-auth/main.rs"
 [dependencies]
 dotenvy = "0.15.7"
 openapi = {path = "immich-open-api"}
-stream = {path = "/home/olegr/tmp/stream"}
 gphotos-api = {path = "photos-api/generated"}
 tokio = { version = "1", features = ["full"] }
 oauth2 = "5.0.0-alpha.4"
@@ -27,3 +26,5 @@ futures = "0.3.30"
 pin-project = "1.1.5"
 futures-util = "0.3.30"
 tokio-stream = "0.1.15"
+async-stream = "0.3.5"
+futures-core = "0.3.30"

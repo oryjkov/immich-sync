@@ -1,12 +1,14 @@
 use anyhow::anyhow;
 use anyhow::Context;
+use async_stream::try_stream;
+use futures::pin_mut;
+use futures_core::stream::Stream;
 use gphotos_api::apis::default_api::ListAlbumsError;
 use openapi::apis::assets_api;
 use openapi::apis::configuration;
 use std::env;
 use std::fs;
 use std::time;
-use stream::*;
 use tokio_stream::StreamExt;
 
 use oauth2::basic::BasicClient;
@@ -77,6 +79,33 @@ impl AuthToken {
     }
 }
 
+// struct GPClient {
+//     token: AuthToken,
+//     api_config: gphotos_api::apis::configuration::Configuration,
+// }
+// impl GPClient {
+//     fn albums_stream(&mut self) -> ResultsStream<String, gphotos_api::models::Album, _, _, _> {
+//         albums_stream = ResultsStream::new(|token: Option<String>| {
+//             let c = self.gp_api_config.clone();
+//             async move {
+//                 let r = gphotos_api::apis::default_api::list_albums(&c, Some(50), token.as_deref())
+//                     .await?;
+//
+//                 match r.albums {
+//                     None => Ok::<_, gphotos_api::apis::Error<ListAlbumsError>>(None),
+//                     Some(albums) => {
+//                         if albums.len() == 0 {
+//                             Ok(None)
+//                         } else {
+//                             Ok(Some(Page::new(albums.into(), r.next_page_token)))
+//                         }
+//                     }
+//                 }
+//             }
+//         })
+//     }
+// }
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let auth_file = "auth_token.json";
@@ -98,25 +127,36 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let mut albums_stream = ResultsStream::new(|token: Option<String>| {
-        let c = gp_api_config.clone();
-        async move {
-            let r =
-                gphotos_api::apis::default_api::list_albums(&c, Some(5), token.as_deref()).await?;
-
-            match r.albums {
-                None => Ok::<_, gphotos_api::apis::Error<ListAlbumsError>>(None),
-                Some(albums) => {
-                    if albums.len() == 0 {
-                        Ok(None)
-                    } else {
-                        Ok(Some(Page::new(albums.into(), r.next_page_token)))
+    fn albums_stream_fn(
+        api_config: &gphotos_api::apis::configuration::Configuration,
+    ) -> impl Stream<
+        Item = Result<
+            gphotos_api::models::Album,
+            gphotos_api::apis::Error<gphotos_api::apis::default_api::ListAlbumsError>,
+        >,
+    > + '_ {
+        try_stream! {
+            let mut token: Option<String> = None;
+            loop {
+                let r = gphotos_api::apis::default_api::list_albums(api_config, Some(50), token.as_deref()).await?;
+                match r.albums {
+                    Some(albums) => {
+                        for album in albums {
+                            yield album;
+                        }
                     }
+                    None => break
+                }
+                token = r.next_page_token;
+                if token.is_none() {
+                    break;
                 }
             }
         }
-    });
-    while let Some(album) = albums_stream.next().await {
+    }
+    let s = albums_stream_fn(&gp_api_config);
+    pin_mut!(s);
+    while let Some(album) = s.next().await {
         let album = album?;
         println!("album {}", album.title.unwrap_or("no name".to_string()));
     }

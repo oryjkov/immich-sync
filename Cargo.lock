@@ -39,6 +39,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3d1d046238990b9cf5bcde22a3fb3584ee5cf65fb2765f454ed428c7a0063da"
 
 [[package]]
+name = "async-stream"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd56dd203fef61ac097dd65721a419ddccb106b2d2b70ba60a6b529f03961a51"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16e62a023e7c117e27523144c5d2459f4397fcc3cab0085af8e2224f643a0193"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -714,8 +736,10 @@ name = "immich-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "dotenvy",
  "futures",
+ "futures-core",
  "futures-util",
  "gphotos-api",
  "oauth2",
@@ -724,7 +748,6 @@ dependencies = [
  "reqwest 0.12.5",
  "serde",
  "serde_json",
- "stream",
  "tokio",
  "tokio-stream",
  "url",
@@ -1514,15 +1537,6 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
-
-[[package]]
-name = "stream"
-version = "0.1.0"
-dependencies = [
- "futures",
- "futures-util",
- "tokio",
-]
 
 [[package]]
 name = "strsim"
