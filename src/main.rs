@@ -88,9 +88,7 @@ impl GPClient {
             ..self.api_config.clone()
         })
     }
-    fn albums_stream_fn(
-        &self,
-    ) -> impl Stream<Item = anyhow::Result<gphotos_api::models::Album>> + '_ {
+    fn albums_stream(&self) -> impl Stream<Item = anyhow::Result<gphotos_api::models::Album>> + '_ {
         try_stream! {
             let mut token: Option<String> = None;
             loop {
@@ -99,6 +97,30 @@ impl GPClient {
                 match r.albums {
                     Some(albums) => {
                         for album in albums {
+                            yield album;
+                        }
+                    }
+                    None => break
+                }
+                token = r.next_page_token;
+                if token.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn media_items_stream(
+        &self,
+    ) -> impl Stream<Item = anyhow::Result<gphotos_api::models::MediaItem>> + '_ {
+        try_stream! {
+            let mut token: Option<String> = None;
+            loop {
+                let config = self.get_config().await?;
+                let r = gphotos_api::apis::default_api::list_media_items(&config, Some(50), token.as_deref()).await?;
+                match r.media_items {
+                    Some(media_items) => {
+                        for album in media_items {
                             yield album;
                         }
                     }
@@ -137,7 +159,18 @@ async fn main() -> anyhow::Result<()> {
         token: Mutex::new(token),
         api_config: gp_api_config,
     };
-    let s = gpclient.albums_stream_fn();
+
+    let s = gpclient.media_items_stream();
+    pin_mut!(s);
+    while let Some(media_item) = s.next().await {
+        let media_item = media_item?;
+        println!(
+            "media_item {}",
+            media_item.filename.unwrap_or("no filename".to_string())
+        );
+    }
+
+    let s = gpclient.albums_stream();
     pin_mut!(s);
     while let Some(album) = s.next().await {
         let album = album?;
