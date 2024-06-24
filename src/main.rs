@@ -1,13 +1,10 @@
-use anyhow::anyhow;
 use anyhow::Context;
 use async_stream::try_stream;
 use futures::pin_mut;
 use futures_core::stream::Stream;
-use gphotos_api::apis::default_api::ListAlbumsError;
-use openapi::apis::assets_api;
-use openapi::apis::configuration;
 use std::env;
 use std::fs;
+use std::sync::Mutex;
 use std::time;
 use tokio_stream::StreamExt;
 
@@ -23,7 +20,6 @@ struct InstalledJs {
 #[derive(serde::Deserialize)]
 struct SecretJs {
     client_id: String,
-    auth_uri: String,
     token_uri: String,
     client_secret: String,
 }
@@ -80,28 +76,26 @@ impl AuthToken {
 }
 
 struct GPClient {
-    token: AuthToken,
+    token: Mutex<AuthToken>,
     api_config: gphotos_api::apis::configuration::Configuration,
 }
 impl GPClient {
-    fn get_config(&self) -> gphotos_api::apis::configuration::Configuration {
-        gphotos_api::apis::configuration::Configuration {
-            oauth_access_token: Some(self.token.token.clone()),
+    async fn get_config(&self) -> anyhow::Result<gphotos_api::apis::configuration::Configuration> {
+        let mut t = self.token.lock().unwrap();
+        t.check_token().await?;
+        Ok(gphotos_api::apis::configuration::Configuration {
+            oauth_access_token: Some(t.token.clone()),
             ..self.api_config.clone()
-        }
+        })
     }
     fn albums_stream_fn(
-        &self, // api_config: &gphotos_api::apis::configuration::Configuration,
-    ) -> impl Stream<
-        Item = Result<
-            gphotos_api::models::Album,
-            gphotos_api::apis::Error<gphotos_api::apis::default_api::ListAlbumsError>,
-        >,
-    > + '_ {
+        &self,
+    ) -> impl Stream<Item = anyhow::Result<gphotos_api::models::Album>> + '_ {
         try_stream! {
             let mut token: Option<String> = None;
             loop {
-                let r = gphotos_api::apis::default_api::list_albums(&self.get_config(), Some(50), token.as_deref()).await?;
+                let config = self.get_config().await?;
+                let r = gphotos_api::apis::default_api::list_albums(&config, Some(50), token.as_deref()).await?;
                 match r.albums {
                     Some(albums) => {
                         for album in albums {
@@ -127,13 +121,12 @@ async fn main() -> anyhow::Result<()> {
         oauth2::EmptyExtraTokenFields,
         oauth2::basic::BasicTokenType,
     > = serde_json::from_str(&(fs::read_to_string(auth_file)?))?;
-    let mut token = AuthToken::new(
+    let token = AuthToken::new(
         saved_token
             .refresh_token()
             .ok_or(anyhow::anyhow!("can't find refresh token"))?
             .secret(),
     );
-    token.check_token().await?;
 
     let gp_api_config = gphotos_api::apis::configuration::Configuration {
         oauth_access_token: Some(token.token.clone()),
@@ -141,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let gpclient = GPClient {
-        token,
+        token: Mutex::new(token),
         api_config: gp_api_config,
     };
     let s = gpclient.albums_stream_fn();
