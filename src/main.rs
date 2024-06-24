@@ -1,19 +1,13 @@
 use anyhow::anyhow;
 use anyhow::Context;
-use futures::task::Poll;
-use futures_util::pin_mut;
 use gphotos_api::apis::default_api::ListAlbumsError;
-use gphotos_api::models::Album; //apis::mode default_api::list_albums(&self.api_config, Some(5), None).await?;
-use gphotos_api::models::ListAlbumsResponse;
 use openapi::apis::assets_api;
 use openapi::apis::configuration;
 use std::env;
 use std::fs;
-use std::future::Future;
-use std::pin::Pin;
 use std::time;
 use stream::*;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 
 use oauth2::basic::BasicClient;
 use oauth2::{RefreshToken, StandardTokenResponse, TokenResponse};
@@ -83,19 +77,6 @@ impl AuthToken {
     }
 }
 
-struct GPWrapper {
-    api_config: gphotos_api::apis::configuration::Configuration,
-}
-
-// impl GPWrapper {
-//     async fn get_albums(&self) -> impl Stream<Item = anyhow::Result<Album>> {
-//         // TODO: not clone here
-//         let x = ResultsStream::new(self.api_config.clone());
-//
-//         x
-//     }
-// }
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let auth_file = "auth_token.json";
@@ -120,19 +101,11 @@ async fn main() -> anyhow::Result<()> {
     let mut albums_stream = ResultsStream::new(|token: Option<String>| {
         let c = gp_api_config.clone();
         async move {
-            // TODO: how can I avoid this dance with converting String to str?
-            let r = if let Some(t) = token {
-                gphotos_api::apis::default_api::list_albums(&c, Some(5), Some(t.as_str())).await?
-            } else {
-                gphotos_api::apis::default_api::list_albums(&c, Some(5), None).await?
-            };
+            let r =
+                gphotos_api::apis::default_api::list_albums(&c, Some(5), token.as_deref()).await?;
 
-            // TODO: seems like next token make it go in circles through the same albums!
             match r.albums {
-                None => Ok::<
-                    Option<Page<String, gphotos_api::models::Album>>,
-                    gphotos_api::apis::Error<ListAlbumsError>,
-                >(None),
+                None => Ok::<_, gphotos_api::apis::Error<ListAlbumsError>>(None),
                 Some(albums) => {
                     if albums.len() == 0 {
                         Ok(None)
