@@ -1,12 +1,19 @@
+use anyhow::anyhow;
 use anyhow::Context;
 use async_stream::try_stream;
 use futures::pin_mut;
+use futures::FutureExt;
+use futures::StreamExt;
+use futures::TryFutureExt;
+use futures::TryStreamExt;
+////use futures::TryStreamExt;
 use futures_core::stream::Stream;
 use std::env;
 use std::fs;
+use std::future::Future;
 use std::sync::Mutex;
 use std::time;
-use tokio_stream::StreamExt;
+// use tokio_stream::StreamExt;
 
 use oauth2::basic::BasicClient;
 use oauth2::{RefreshToken, StandardTokenResponse, TokenResponse};
@@ -135,6 +142,30 @@ impl GPClient {
     }
 }
 
+// Takes a media_item description and returns a future that will download it, save to a local file
+// and update sql with the new record.
+async fn fetch(media_item: gphotos_api::models::MediaItem) -> anyhow::Result<()> {
+    let base_url = media_item
+        .base_url
+        .ok_or(anyhow!(format!("missing base url")))?;
+    let metadata = media_item
+        .media_metadata
+        .ok_or(anyhow!(format!("no metadata")))?;
+
+    let suffix = if metadata.photo.is_some() {
+        "=d"
+    } else if metadata.video.is_some() {
+        "=dv"
+    } else {
+        Err(anyhow!("neither photo nor video"))?
+    };
+    let fetch_url = format!("{}{}", base_url, suffix);
+    println!("going to fetch {}", &fetch_url);
+    let bytes = reqwest::get(fetch_url).await?.bytes().await?;
+    println!("fetched {} bytes for id {:?}", bytes.len(), media_item.id);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let auth_file = "auth_token.json";
@@ -161,21 +192,19 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let s = gpclient.media_items_stream();
-    pin_mut!(s);
-    while let Some(media_item) = s.next().await {
-        let media_item = media_item?;
-        println!(
-            "media_item {}",
-            media_item.filename.unwrap_or("no filename".to_string())
-        );
-    }
+    let x = s
+        .take(500)
+        .map(|media_item_or| async move { fetch(media_item_or?).await })
+        .buffer_unordered(10)
+        .collect::<Vec<_>>()
+        .await;
 
-    let s = gpclient.albums_stream();
-    pin_mut!(s);
-    while let Some(album) = s.next().await {
-        let album = album?;
-        println!("album {}", album.title.unwrap_or("no name".to_string()));
-    }
+    // let s = gpclient.albums_stream();
+    // pin_mut!(s);
+    // while let Some(album) = s.next().await {
+    //     let album = album?;
+    //     println!("album {}", album.title.unwrap_or("no name".to_string()));
+    // }
 
     // let mut api_config = configuration::Configuration::new();
     // api_config.api_key =
