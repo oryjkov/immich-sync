@@ -1,24 +1,38 @@
-use anyhow::anyhow;
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use async_stream::try_stream;
 use futures::pin_mut;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
+use serde::Serialize;
+use tokio::fs::write;
 ////use futures::TryStreamExt;
+use clap::Parser;
 use futures_core::stream::Stream;
 use std::env;
 use std::fs;
 use std::future::Future;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time;
 // use tokio_stream::StreamExt;
 
 use oauth2::basic::BasicClient;
 use oauth2::{RefreshToken, StandardTokenResponse, TokenResponse};
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::Pool;
+use sqlx::Row;
+use sqlx::Sqlite;
 
 use oauth2::{ClientId, ClientSecret, TokenUrl};
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(long)]
+    destination: String,
+}
 
 #[derive(serde::Deserialize)]
 struct InstalledJs {
@@ -142,15 +156,42 @@ impl GPClient {
     }
 }
 
-// Takes a media_item description and returns a future that will download it, save to a local file
-// and update sql with the new record.
-async fn fetch(media_item: gphotos_api::models::MediaItem) -> anyhow::Result<()> {
+// Takes a media_item description, downloads it, saves it to a local file and updates sql with
+// the new record.
+async fn fetch(
+    media_item: gphotos_api::models::MediaItem,
+    pool: &Pool<Sqlite>,
+    local_dir: &Path,
+) -> anyhow::Result<()> {
     let base_url = media_item
         .base_url
+        .as_ref()
         .ok_or(anyhow!(format!("missing base url")))?;
     let metadata = media_item
         .media_metadata
+        .as_ref()
         .ok_or(anyhow!(format!("no metadata")))?;
+    let id = media_item.id.as_ref().ok_or(anyhow!(format!("no id")))?;
+    let filename = media_item.filename.clone().unwrap_or("".to_string());
+    let metadata_str = serde_json::to_string(&metadata)?;
+    let contributor_str = media_item
+        .contributor_info
+        .as_ref()
+        .map(|x| {
+            let z = serde_json::to_string(x.into());
+            z.ok()
+        })
+        .flatten()
+        .unwrap_or("".to_string());
+
+    let existing_row = sqlx::query(r#"SELECT id FROM media_items WHERE id = $1"#)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    if existing_row.is_some() {
+        // TODO: maybe just return Ok(()) ?
+        return Err(anyhow!(format!("already there")));
+    }
 
     let suffix = if metadata.photo.is_some() {
         "=d"
@@ -160,14 +201,49 @@ async fn fetch(media_item: gphotos_api::models::MediaItem) -> anyhow::Result<()>
         Err(anyhow!("neither photo nor video"))?
     };
     let fetch_url = format!("{}{}", base_url, suffix);
-    println!("going to fetch {}", &fetch_url);
+    println!("going to fetch {:?}", media_item);
     let bytes = reqwest::get(fetch_url).await?.bytes().await?;
     println!("fetched {} bytes for id {:?}", bytes.len(), media_item.id);
+
+    let local_path = format!("{}.media_item", id);
+    let full_path = local_dir.join(&local_path);
+    tokio::fs::write(&full_path, bytes)
+        .await
+        .with_context(|| format!("failed writing local file {:?}", &full_path))?;
+
+    sqlx::query(
+        r#"
+            INSERT INTO media_items (id, filename, local_file, description, mime_type, contributor, metadata) VALUES
+                    ($1, $2, $3, $4, $5, $6, $7)
+            "#,
+    )
+    .bind(id)
+    .bind(&filename)
+    .bind(&local_path)
+    .bind(media_item.description)
+    .bind(media_item.mime_type)
+    .bind(&contributor_str)
+    .bind(&metadata_str)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(
+            Path::new(&args.destination)
+                .join("sqlite.db")
+                .as_os_str()
+                .to_str()
+                .unwrap(),
+        )
+        .await?;
+
     let auth_file = "auth_token.json";
     // We only need the refresh token.
     let saved_token: StandardTokenResponse<
@@ -191,13 +267,23 @@ async fn main() -> anyhow::Result<()> {
         api_config: gp_api_config,
     };
 
+    let path = Path::new(&args.destination).join("media_items");
     let s = gpclient.media_items_stream();
     let x = s
-        .take(500)
-        .map(|media_item_or| async move { fetch(media_item_or?).await })
-        .buffer_unordered(10)
+        .take(5)
+        .map(|media_item_or| {
+            let p = pool.clone();
+            let local_path = path.clone();
+            async move { fetch(media_item_or?, &p, &local_path).await }
+        })
+        .buffer_unordered(2)
         .collect::<Vec<_>>()
         .await;
+
+    println!(
+        "{:?}",
+        x.into_iter().filter(|x| x.is_err()).collect::<Vec<_>>()
+    );
 
     // let s = gpclient.albums_stream();
     // pin_mut!(s);
