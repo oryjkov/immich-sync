@@ -34,6 +34,8 @@ pub struct Album {
     /// Identifier of the cover photo media item.
     #[serde(rename = "coverPhotoMediaItemId", skip_serializing_if = "Option::is_none")]
     pub cover_photo_media_item_id: Option<String>,
+    #[serde(rename = "sharedAlbumOptions", skip_serializing_if = "Option::is_none")]
+    pub shared_album_options: Option<Box<models::AlbumSharedAlbumOptions>>,
 }
 
 impl Album {
@@ -46,6 +48,7 @@ impl Album {
             media_items_count: None,
             cover_photo_base_url: None,
             cover_photo_media_item_id: None,
+            shared_album_options: None,
         }
     }
 }

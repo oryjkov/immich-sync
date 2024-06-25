@@ -3,6 +3,7 @@
 Cargo.toml
 README.md
 docs/Album.md
+docs/AlbumSharedAlbumOptions.md
 docs/DefaultApi.md
 docs/ListAlbumsResponse.md
 docs/ListMediaItemsResponse.md
@@ -18,6 +19,7 @@ src/apis/default_api.rs
 src/apis/mod.rs
 src/lib.rs
 src/models/album.rs
+src/models/album_shared_album_options.rs
 src/models/list_albums_response.rs
 src/models/list_media_items_response.rs
 src/models/list_shared_albums_response.rs

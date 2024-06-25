@@ -36,6 +36,7 @@ Class | Method | HTTP request | Description
 ## Documentation For Models
 
  - [Album](docs/Album.md)
+ - [AlbumSharedAlbumOptions](docs/AlbumSharedAlbumOptions.md)
  - [ListAlbumsResponse](docs/ListAlbumsResponse.md)
  - [ListMediaItemsResponse](docs/ListMediaItemsResponse.md)
  - [ListSharedAlbumsResponse](docs/ListSharedAlbumsResponse.md)
