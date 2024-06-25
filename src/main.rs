@@ -16,7 +16,6 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time;
-// use tokio_stream::StreamExt;
 
 use oauth2::basic::BasicClient;
 use oauth2::{RefreshToken, StandardTokenResponse, TokenResponse};
@@ -134,6 +133,30 @@ impl GPClient {
         }
     }
 
+    fn shared_albums_stream(
+        &self,
+    ) -> impl Stream<Item = anyhow::Result<gphotos_api::models::Album>> + '_ {
+        try_stream! {
+            let mut token: Option<String> = None;
+            loop {
+                let config = self.get_config().await?;
+                let r = gphotos_api::apis::default_api::list_shared_albums(&config, Some(50), token.as_deref()).await?;
+                match r.shared_albums {
+                    Some(albums) => {
+                        for album in albums {
+                            yield album;
+                        }
+                    }
+                    None => break
+                }
+                token = r.next_page_token;
+                if token.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+
     fn media_items_stream(
         &self,
     ) -> impl Stream<Item = anyhow::Result<gphotos_api::models::MediaItem>> + '_ {
@@ -141,7 +164,7 @@ impl GPClient {
             let mut token: Option<String> = None;
             loop {
                 let config = self.get_config().await?;
-                let r = gphotos_api::apis::default_api::list_media_items(&config, Some(50), token.as_deref()).await?;
+                let r = gphotos_api::apis::default_api::list_media_items(&config, Some(100), token.as_deref()).await?;
                 match r.media_items {
                     Some(media_items) => {
                         for album in media_items {
@@ -159,7 +182,11 @@ impl GPClient {
     }
 }
 
-async fn add_album(album: gphotos_api::models::Album, pool: &Pool<Sqlite>) -> anyhow::Result<()> {
+async fn add_album(
+    album: gphotos_api::models::Album,
+    is_shared: bool,
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<()> {
     let id = album.id.as_ref().ok_or(anyhow!(format!("no album id!")))?;
 
     let share_info = album
@@ -186,8 +213,8 @@ async fn add_album(album: gphotos_api::models::Album, pool: &Pool<Sqlite>) -> an
 
     sqlx::query(
         r#"
-            INSERT INTO albums (id, title, share_info, media_items_count, cover_photo_media_item_id) VALUES
-                    ($1, $2, $3, $4, $5)
+            INSERT INTO albums (id, title, share_info, media_items_count, cover_photo_media_item_id, is_shared) VALUES
+                    ($1, $2, $3, $4, $5, $6)
             "#,
     )
     .bind(id)
@@ -195,6 +222,7 @@ async fn add_album(album: gphotos_api::models::Album, pool: &Pool<Sqlite>) -> an
     .bind(&share_info)
     .bind(media_items_count)
     .bind(album.cover_photo_media_item_id)
+    .bind(is_shared)
     .execute(pool)
     .await?;
     Ok(())
@@ -245,7 +273,7 @@ async fn fetch(
         Err(anyhow!("neither photo nor video"))?
     };
     let fetch_url = format!("{}{}", base_url, suffix);
-    println!("going to fetch {:?}", media_item);
+    //println!("going to fetch {:?}", media_item);
     let bytes = reqwest::get(fetch_url).await?.bytes().await?;
     println!("fetched {} bytes for id {:?}", bytes.len(), media_item.id);
 
@@ -311,18 +339,36 @@ async fn main() -> anyhow::Result<()> {
         api_config: gp_api_config,
     };
 
-    let s = gpclient.albums_stream();
-    let albums_results = s
-        .take(5)
-        .map(|album_or| {
-            let p = pool.clone();
-            async move { add_album(album_or?, &p).await }
-        })
+    let shared_albums_stream = gpclient.shared_albums_stream().map(|album_or| {
+        let p = pool.clone();
+        async move { add_album(album_or?, true, &p).await }
+    });
+    let shared_albums_results = shared_albums_stream
         .buffer_unordered(args.concurrency)
         .collect::<Vec<_>>()
         .await;
     println!(
-        "{:?}",
+        "shared albums: {:?}",
+        shared_albums_results
+            .into_iter()
+            .filter(|x| x.is_err())
+            .collect::<Vec<_>>()
+    );
+
+    let albums_stream = gpclient
+        .albums_stream()
+        // .take(5)
+        .map(|album_or| {
+            let p = pool.clone();
+            async move { add_album(album_or?, false, &p).await }
+        });
+    let albums_results = albums_stream
+        //.chain(shared_albums_stream)
+        .buffer_unordered(args.concurrency)
+        .collect::<Vec<_>>()
+        .await;
+    println!(
+        "albums {:?}",
         albums_results
             .into_iter()
             .filter(|x| x.is_err())
@@ -332,7 +378,7 @@ async fn main() -> anyhow::Result<()> {
     let path = Path::new(&args.destination).join("media_items");
     let s = gpclient.media_items_stream();
     let media_items_results = s
-        .take(5)
+        // .take(5)
         .map(|media_item_or| {
             let p = pool.clone();
             let local_path = path.clone();

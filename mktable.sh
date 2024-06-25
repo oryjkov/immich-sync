@@ -17,6 +17,7 @@ sqlite-utils create-table sqlite.db albums \
     title text \
     media_items_count integer \
     share_info text \
+    is_shared integer \
     id text \
     cover_photo_media_item_id text \
     --not-null id \
