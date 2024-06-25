@@ -8,6 +8,8 @@ pub mod list_shared_albums_response;
 pub use self::list_shared_albums_response::ListSharedAlbumsResponse;
 pub mod media_item;
 pub use self::media_item::MediaItem;
+pub mod media_item_contributor_info;
+pub use self::media_item_contributor_info::MediaItemContributorInfo;
 pub mod media_item_media_metadata;
 pub use self::media_item_media_metadata::MediaItemMediaMetadata;
 pub mod media_item_media_metadata_photo;

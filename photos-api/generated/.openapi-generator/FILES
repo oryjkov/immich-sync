@@ -8,6 +8,7 @@ docs/ListAlbumsResponse.md
 docs/ListMediaItemsResponse.md
 docs/ListSharedAlbumsResponse.md
 docs/MediaItem.md
+docs/MediaItemContributorInfo.md
 docs/MediaItemMediaMetadata.md
 docs/MediaItemMediaMetadataPhoto.md
 docs/MediaItemMediaMetadataVideo.md
@@ -21,6 +22,7 @@ src/models/list_albums_response.rs
 src/models/list_media_items_response.rs
 src/models/list_shared_albums_response.rs
 src/models/media_item.rs
+src/models/media_item_contributor_info.rs
 src/models/media_item_media_metadata.rs
 src/models/media_item_media_metadata_photo.rs
 src/models/media_item_media_metadata_video.rs

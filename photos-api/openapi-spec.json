@@ -314,6 +314,19 @@
               }
             }
           },
+          "contributorInfo": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Name of the contributor."
+              },
+              "profilePictureUrl": {
+                "type": "string",
+                "description": "URL of the contributor's profile picture."
+              }
+            }
+          },
           "filename": {
             "type": "string",
             "description": "filename of the original media item."

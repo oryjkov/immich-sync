@@ -40,6 +40,7 @@ Class | Method | HTTP request | Description
  - [ListMediaItemsResponse](docs/ListMediaItemsResponse.md)
  - [ListSharedAlbumsResponse](docs/ListSharedAlbumsResponse.md)
  - [MediaItem](docs/MediaItem.md)
+ - [MediaItemContributorInfo](docs/MediaItemContributorInfo.md)
  - [MediaItemMediaMetadata](docs/MediaItemMediaMetadata.md)
  - [MediaItemMediaMetadataPhoto](docs/MediaItemMediaMetadataPhoto.md)
  - [MediaItemMediaMetadataVideo](docs/MediaItemMediaMetadataVideo.md)
