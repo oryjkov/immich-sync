@@ -408,6 +408,19 @@
           "coverPhotoMediaItemId": {
             "type": "string",
             "description": "Identifier of the cover photo media item."
+          },
+          "sharedAlbumOptions": {
+            "type": "object",
+            "properties": {
+              "isCollaborative": {
+                "type": "boolean",
+                "description": "Indicates if the album is collaborative."
+              },
+              "isCommentable": {
+                "type": "boolean",
+                "description": "Indicates if comments are enabled for the album."
+              }
+            }
           }
         }
       }
