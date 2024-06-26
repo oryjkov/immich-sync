@@ -13,6 +13,7 @@ docs/MediaItemContributorInfo.md
 docs/MediaItemMediaMetadata.md
 docs/MediaItemMediaMetadataPhoto.md
 docs/MediaItemMediaMetadataVideo.md
+docs/SearchMediaItemsRequest.md
 git_push.sh
 src/apis/configuration.rs
 src/apis/default_api.rs
@@ -29,3 +30,4 @@ src/models/media_item_media_metadata.rs
 src/models/media_item_media_metadata_photo.rs
 src/models/media_item_media_metadata_video.rs
 src/models/mod.rs
+src/models/search_media_items_request.rs

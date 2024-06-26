@@ -18,3 +18,5 @@ pub mod media_item_media_metadata_photo;
 pub use self::media_item_media_metadata_photo::MediaItemMediaMetadataPhoto;
 pub mod media_item_media_metadata_video;
 pub use self::media_item_media_metadata_video::MediaItemMediaMetadataVideo;
+pub mod search_media_items_request;
+pub use self::search_media_items_request::SearchMediaItemsRequest;

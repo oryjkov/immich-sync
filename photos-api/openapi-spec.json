@@ -205,6 +205,55 @@
           }
         ]
       }
+    },
+    "/mediaItems:search": {
+      "post": {
+        "summary": "Search media items by album ID",
+        "operationId": "searchMediaItems",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "albumId": {
+                    "type": "string",
+                    "description": "ID of the album to search media items in.",
+                    "example": "abcd1234"
+                  },
+                  "pageSize": {
+                    "type": "integer",
+                    "description": "Maximum number of media items to return.",
+                    "default": 25
+                  },
+                  "pageToken": {
+                    "type": "string",
+                    "description": "Token to retrieve the next page of results."
+                  }
+                },
+                "required": ["albumId"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Media items listed successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListMediaItemsResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": ["https://www.googleapis.com/auth/photoslibrary.readonly"]
+          }
+        ]
+      }
     }
   },
   "components": {

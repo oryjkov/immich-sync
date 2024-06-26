@@ -9,6 +9,7 @@ Method | HTTP request | Description
 [**list_albums**](DefaultApi.md#list_albums) | **GET** /albums | List albums
 [**list_media_items**](DefaultApi.md#list_media_items) | **GET** /mediaItems | List all media items
 [**list_shared_albums**](DefaultApi.md#list_shared_albums) | **GET** /sharedAlbums | List shared albums
+[**search_media_items**](DefaultApi.md#search_media_items) | **POST** /mediaItems:search | Search media items by album ID
 
 
 
@@ -150,6 +151,34 @@ Name | Type | Description  | Required | Notes
 ### HTTP request headers
 
 - **Content-Type**: Not defined
+- **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+
+## search_media_items
+
+> models::ListMediaItemsResponse search_media_items(search_media_items_request)
+Search media items by album ID
+
+### Parameters
+
+
+Name | Type | Description  | Required | Notes
+------------- | ------------- | ------------- | ------------- | -------------
+**search_media_items_request** | Option<[**SearchMediaItemsRequest**](SearchMediaItemsRequest.md)> |  |  |
+
+### Return type
+
+[**models::ListMediaItemsResponse**](ListMediaItemsResponse.md)
+
+### Authorization
+
+[oauth2](../README.md#oauth2)
+
+### HTTP request headers
+
+- **Content-Type**: application/json
 - **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)

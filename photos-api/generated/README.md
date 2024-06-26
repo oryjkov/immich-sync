@@ -31,6 +31,7 @@ Class | Method | HTTP request | Description
 *DefaultApi* | [**list_albums**](docs/DefaultApi.md#list_albums) | **GET** /albums | List albums
 *DefaultApi* | [**list_media_items**](docs/DefaultApi.md#list_media_items) | **GET** /mediaItems | List all media items
 *DefaultApi* | [**list_shared_albums**](docs/DefaultApi.md#list_shared_albums) | **GET** /sharedAlbums | List shared albums
+*DefaultApi* | [**search_media_items**](docs/DefaultApi.md#search_media_items) | **POST** /mediaItems:search | Search media items by album ID
 
 
 ## Documentation For Models
@@ -45,6 +46,7 @@ Class | Method | HTTP request | Description
  - [MediaItemMediaMetadata](docs/MediaItemMediaMetadata.md)
  - [MediaItemMediaMetadataPhoto](docs/MediaItemMediaMetadataPhoto.md)
  - [MediaItemMediaMetadataVideo](docs/MediaItemMediaMetadataVideo.md)
+ - [SearchMediaItemsRequest](docs/SearchMediaItemsRequest.md)
 
 
 To get access to the crate's generated documentation, use:
