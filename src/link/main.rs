@@ -11,6 +11,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use std::env;
+use std::mem::swap;
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Parser, Debug)]
@@ -26,7 +27,7 @@ struct Args {
     filename: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PhotoMetadata {
     camera_make: Option<String>,
@@ -53,7 +54,7 @@ where
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq, PartialOrd)]
+#[derive(Debug, Deserialize, PartialEq, PartialOrd, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ImageData {
     creation_time: Option<String>,
@@ -105,7 +106,7 @@ impl From<models::AssetResponseDto> for ImageData {
 }
 
 async fn link_items(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<()> {
-    let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items LIMIT 10"#)
+    let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items where filename="20240612_210708.heic" LIMIT 100"#)
         .fetch_all(pool)
         .await?;
     for gphoto_item in gphoto_items {
@@ -115,27 +116,37 @@ async fn link_items(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<(
             serde_json::from_str(gphoto_item.try_get("metadata").unwrap())
                 .with_context(|| format!("failed to parse gphoto metadata"))?;
 
-        println!("considering filename {filename}, (gphoto {gphoto_id})",);
+        let mut matches = 0;
 
         let search_req = models::MetadataSearchDto {
-            original_file_name: Some(filename),
+            original_file_name: Some(filename.clone()),
             with_exif: Some(true),
             ..Default::default()
         };
         let res = search_api::search_metadata(api_config, search_req).await?;
-        println!("found {} immich asset(s)", res.assets.items.len());
-        for immich_item in res.assets.items {
+        // println!("found {} immich asset(s)", res.assets.items.len());
+        for immich_item in &res.assets.items {
             let id = immich_item.id.clone();
-            let immich_metadata = ImageData::from(immich_item);
+            let immich_metadata = ImageData::from(immich_item.clone());
+            let mut immich_metadata_flipped = immich_metadata.clone();
+            swap(
+                &mut immich_metadata_flipped.width,
+                &mut immich_metadata_flipped.height,
+            );
 
-            print!("immich asset id {}: ", id);
-            if gphoto_metadata == immich_metadata {
-                println!("match");
+            // print!("immich asset id {}: ", id);
+            if gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped {
+                // println!("match");
+                matches += 1;
             } else {
-                println!("no match");
-                println!("gphoto metadata: {:?}", gphoto_metadata);
-                println!("immich metadata: {:?}", immich_metadata);
+                // println!("no match");
+                // println!("gphoto metadata: {:?}", gphoto_metadata);
+                // println!("immich metadata: {:?}", immich_metadata);
             }
+            println!(
+                "{filename:12} \t\tmatches: {matches}/{} (gphoto {gphoto_id})",
+                res.assets.items.len()
+            );
         }
     }
     Ok(())
