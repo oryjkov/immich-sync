@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use dotenvy::dotenv;
 use immich_api::apis::albums_api;
@@ -53,11 +54,24 @@ where
         Ok(None)
     }
 }
-
+fn deserialize_creation_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    if let Some(date_str) = s {
+        DateTime::parse_from_rfc3339(&date_str)
+            .map(|dt| Some(dt.with_timezone(&Utc)))
+            .map_err(serde::de::Error::custom)
+    } else {
+        Ok(None)
+    }
+}
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ImageData {
-    creation_time: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_creation_time")]
+    creation_time: Option<DateTime<Utc>>,
     width: Option<String>,
     height: Option<String>,
     photo: Option<PhotoMetadata>,
@@ -79,7 +93,11 @@ impl From<models::AssetResponseDto> for ImageData {
                 }
             });
         ImageData {
-            creation_time: Some(value.file_created_at),
+            creation_time: Some(
+                DateTime::parse_from_rfc3339(&value.file_created_at)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap(),
+            ),
             width: exif.as_ref().and_then(|exif| {
                 exif.exif_image_width
                     .flatten()
@@ -105,49 +123,67 @@ impl From<models::AssetResponseDto> for ImageData {
     }
 }
 
-async fn link_items(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<()> {
-    let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items where filename="20240612_210708.heic" LIMIT 100"#)
+async fn link_item(
+    api_config: &Configuration,
+    gphoto_id: &str,
+    filename: &str,
+    metadata: &str,
+) -> Result<()> {
+    let gphoto_metadata: ImageData = serde_json::from_str(metadata)
+        .with_context(|| format!("failed to parse gphoto metadata"))?;
+
+    let mut matches = 0;
+
+    let search_req = models::MetadataSearchDto {
+        original_file_name: Some(filename.to_string()),
+        with_exif: Some(true),
+        ..Default::default()
+    };
+    let res = search_api::search_metadata(api_config, search_req).await?;
+    if res.assets.items.len() == 0 {
+        println!("{} not in immich", filename);
+    }
+    // println!("found {} immich asset(s)", res.assets.items.len());
+    for immich_item in &res.assets.items {
+        // let id = immich_item.id.clone();
+        let immich_metadata = ImageData::from(immich_item.clone());
+        let mut immich_metadata_flipped = immich_metadata.clone();
+        swap(
+            &mut immich_metadata_flipped.width,
+            &mut immich_metadata_flipped.height,
+        );
+
+        // print!("immich asset id {}: ", id);
+        if gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped {
+            // println!("match");
+            matches += 1;
+        } else {
+            println!("no match");
+            println!("gphoto metadata: {:?}", metadata);
+            println!("immich metadata: {:?}", immich_item);
+        }
+        println!(
+            "{filename:12} \t\tmatches: {matches}/{} (gphoto {gphoto_id})",
+            res.assets.items.len()
+        );
+    }
+    Ok(())
+}
+
+async fn link_album_items(
+    pool: &Pool<Sqlite>,
+    api_config: &Configuration,
+    gphoto_album_id: &str,
+) -> Result<()> {
+    let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items where id IN (select media_item_id from album_items WHERE album_id = $1)"#)
+        .bind(gphoto_album_id)
         .fetch_all(pool)
         .await?;
     for gphoto_item in gphoto_items {
-        let gphoto_id: String = gphoto_item.try_get("id").unwrap();
-        let filename: String = gphoto_item.try_get("filename").unwrap();
-        let gphoto_metadata: ImageData =
-            serde_json::from_str(gphoto_item.try_get("metadata").unwrap())
-                .with_context(|| format!("failed to parse gphoto metadata"))?;
-
-        let mut matches = 0;
-
-        let search_req = models::MetadataSearchDto {
-            original_file_name: Some(filename.clone()),
-            with_exif: Some(true),
-            ..Default::default()
-        };
-        let res = search_api::search_metadata(api_config, search_req).await?;
-        // println!("found {} immich asset(s)", res.assets.items.len());
-        for immich_item in &res.assets.items {
-            let id = immich_item.id.clone();
-            let immich_metadata = ImageData::from(immich_item.clone());
-            let mut immich_metadata_flipped = immich_metadata.clone();
-            swap(
-                &mut immich_metadata_flipped.width,
-                &mut immich_metadata_flipped.height,
-            );
-
-            // print!("immich asset id {}: ", id);
-            if gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped {
-                // println!("match");
-                matches += 1;
-            } else {
-                // println!("no match");
-                // println!("gphoto metadata: {:?}", gphoto_metadata);
-                // println!("immich metadata: {:?}", immich_metadata);
-            }
-            println!(
-                "{filename:12} \t\tmatches: {matches}/{} (gphoto {gphoto_id})",
-                res.assets.items.len()
-            );
-        }
+        let gphoto_id: &str = gphoto_item.try_get("id").unwrap();
+        let filename: &str = gphoto_item.try_get("filename").unwrap();
+        let metadata: &str = gphoto_item.try_get("metadata").unwrap();
+        link_item(api_config, gphoto_id, filename, metadata).await?;
     }
     Ok(())
 }
@@ -218,7 +254,7 @@ async fn link_albums(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<
                 });
             }
             None => {
-                println!("not found {:?}", name);
+                println!("not found {:?}, {}", name, id);
             }
         }
     }
@@ -260,8 +296,8 @@ async fn main() -> Result<()> {
         base_path: args.immich_url,
         ..Default::default()
     };
-    link_items(&pool, &api_config).await?;
-    // link_albums(&pool, &api_config).await?;
+    link_albums(&pool, &api_config).await?;
+    link_album_items(&pool, &api_config, "ABZoRtEtjEIiQ8H3z5wIKoiB2hbaxaMgOa6r7EGxcOq5EqQ-XTRGeEqnhOv-g6fJ2Snb03YQZpQeVXajBZyPNYEMu7W-IgquZw").await?;
 
     Ok(())
 }
