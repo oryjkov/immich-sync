@@ -2,7 +2,6 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use dotenvy::dotenv;
 use immich_api::apis::albums_api;
-use immich_api::apis::assets_api;
 use immich_api::apis::configuration;
 use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
@@ -12,7 +11,6 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use std::env;
-use std::path::Path;
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Parser, Debug)]
@@ -28,7 +26,7 @@ struct Args {
     filename: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, PartialOrd, Default)]
 #[serde(rename_all = "camelCase")]
 struct PhotoMetadata {
     camera_make: Option<String>,
@@ -36,10 +34,26 @@ struct PhotoMetadata {
     focal_length: Option<f64>,
     aperture_f_number: Option<f64>,
     iso_equivalent: Option<u32>,
-    exposure_time: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_exposure_time")]
+    exposure_time: Option<u64>,
+}
+fn deserialize_exposure_time<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    if let Some(exp_s) = s {
+        let s = exp_s
+            .trim_end_matches('s')
+            .parse::<f64>()
+            .map_err(serde::de::Error::custom)?;
+        Ok(Some((s * 1e6).round() as u64))
+    } else {
+        Ok(None)
+    }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, PartialOrd)]
 #[serde(rename_all = "camelCase")]
 struct ImageData {
     creation_time: Option<String>,
@@ -48,60 +62,80 @@ struct ImageData {
     photo: Option<PhotoMetadata>,
 }
 
+impl From<models::AssetResponseDto> for ImageData {
+    fn from(value: models::AssetResponseDto) -> ImageData {
+        let exif = &value.exif_info;
+        let exposure_time = exif
+            .as_ref()
+            .and_then(|exif| exif.exposure_time.clone().flatten())
+            .map(|s| {
+                let p = s.split('/').collect::<Vec<_>>();
+                if p.len() == 0 {
+                    (p[0].parse::<f64>().unwrap() * 1e6).round() as u64
+                } else {
+                    ((p[0].parse::<f64>().unwrap() / p[1].parse::<f64>().unwrap()) * 1e6).round()
+                        as u64
+                }
+            });
+        ImageData {
+            creation_time: Some(value.file_created_at),
+            width: exif.as_ref().and_then(|exif| {
+                exif.exif_image_width
+                    .flatten()
+                    .map(|f| format!("{}", f as i64))
+            }),
+            height: exif.as_ref().and_then(|exif| {
+                exif.exif_image_height
+                    .flatten()
+                    .map(|f| format!("{}", f as i64))
+            }),
+            photo: Some(PhotoMetadata {
+                camera_make: exif.as_ref().and_then(|exif| exif.make.clone().flatten()),
+                camera_model: exif.as_ref().and_then(|exif| exif.model.clone().flatten()),
+                aperture_f_number: exif.as_ref().and_then(|exif| exif.f_number.flatten()),
+                focal_length: exif.as_ref().and_then(|exif| exif.focal_length.flatten()),
+                iso_equivalent: exif
+                    .as_ref()
+                    .and_then(|exif| exif.iso.flatten().map(|x| x as u32)),
+                exposure_time,
+                ..Default::default()
+            }),
+        }
+    }
+}
+
 async fn link_items(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<()> {
-    let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items LIMIT 2"#)
+    let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items LIMIT 10"#)
         .fetch_all(pool)
         .await?;
     for gphoto_item in gphoto_items {
         let gphoto_id: String = gphoto_item.try_get("id").unwrap();
         let filename: String = gphoto_item.try_get("filename").unwrap();
         let gphoto_metadata: ImageData =
-            serde_json::from_str(gphoto_item.try_get("metadata").unwrap())?;
+            serde_json::from_str(gphoto_item.try_get("metadata").unwrap())
+                .with_context(|| format!("failed to parse gphoto metadata"))?;
 
-        println!(
-            "considering filename {filename}, (gphoto {gphoto_id}) with metadata\n{:?}",
-            gphoto_metadata
-        );
+        println!("considering filename {filename}, (gphoto {gphoto_id})",);
 
         let search_req = models::MetadataSearchDto {
             original_file_name: Some(filename),
+            with_exif: Some(true),
             ..Default::default()
         };
-        let mut res = search_api::search_metadata(api_config, search_req).await?;
+        let res = search_api::search_metadata(api_config, search_req).await?;
         println!("found {} immich asset(s)", res.assets.items.len());
-        if res.assets.items.len() == 1 {
-            let immich_item = res.assets.items.pop().unwrap();
-            let immich_item = assets_api::get_asset_info(api_config, &immich_item.id, None).await?;
+        for immich_item in res.assets.items {
+            let id = immich_item.id.clone();
+            let immich_metadata = ImageData::from(immich_item);
 
-            let exif = &immich_item.exif_info;
-            let immich_metadata = ImageData {
-                creation_time: Some(immich_item.file_created_at),
-                width: exif
-                    .as_ref()
-                    .map(|exif| {
-                        exif.exif_image_width
-                            .flatten()
-                            .map(|f| format!("{}", f as i64))
-                    })
-                    .flatten(),
-                height: exif
-                    .as_ref()
-                    .map(|exif| {
-                        exif.exif_image_height
-                            .flatten()
-                            .map(|f| format!("{}", f as i64))
-                    })
-                    .flatten(),
-                photo: None,
-                // width: exif.map(|exif| {
-                //     exif.exif_image_width
-                //         .flatten()
-                //         .map(|f| format!("{}", f as i64))
-                // }),
-            };
-            println!("immich asset id {}", immich_item.id);
-            println!("gphoto metadata: {:?}", gphoto_metadata);
-            println!("immich metadata: {:?}", immich_metadata);
+            print!("immich asset id {}: ", id);
+            if gphoto_metadata == immich_metadata {
+                println!("match");
+            } else {
+                println!("no match");
+                println!("gphoto metadata: {:?}", gphoto_metadata);
+                println!("immich metadata: {:?}", immich_metadata);
+            }
         }
     }
     Ok(())
@@ -215,8 +249,8 @@ async fn main() -> Result<()> {
         base_path: args.immich_url,
         ..Default::default()
     };
-    // link_items(&pool, &api_config).await?;
-    link_albums(&pool, &api_config).await?;
+    link_items(&pool, &api_config).await?;
+    // link_albums(&pool, &api_config).await?;
 
     Ok(())
 }
