@@ -143,12 +143,20 @@ impl From<models::AssetResponseDto> for ImageData {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum LookupResult {
+    NotFound,
+    NotMatched,
+    Matched,
+    MultipleMatched,
+}
+
 async fn link_item(
     api_config: &Configuration,
     gphoto_id: &str,
     filename: &str,
     metadata: &str,
-) -> Result<()> {
+) -> Result<LookupResult> {
     let gphoto_metadata: ImageData = serde_json::from_str(metadata)
         .with_context(|| format!("failed to parse gphoto metadata"))?;
 
@@ -159,12 +167,13 @@ async fn link_item(
         with_exif: Some(true),
         ..Default::default()
     };
+    let mut rv = LookupResult::NotFound;
     let res = search_api::search_metadata(api_config, search_req).await?;
-    if res.assets.items.len() == 0 {
-        println!("{} not in immich", filename);
-    }
     // println!("found {} immich asset(s)", res.assets.items.len());
     for immich_item in &res.assets.items {
+        if rv == LookupResult::NotFound {
+            rv = LookupResult::NotMatched;
+        }
         // let id = immich_item.id.clone();
         let immich_metadata = ImageData::from(immich_item.clone());
         let mut immich_metadata_flipped = immich_metadata.clone();
@@ -175,21 +184,25 @@ async fn link_item(
 
         // print!("immich asset id {}: ", id);
         if gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped {
+            if rv == LookupResult::NotMatched {
+                rv = LookupResult::Matched;
+            } else {
+                rv = LookupResult::MultipleMatched;
+            }
             // println!("match");
             matches += 1;
         } else {
-            println!("no match");
             // println!("gphoto metadata: {:?}", gphoto_metadata);
             // println!("immich metadata: {:?}", immich_metadata);
-            println!("gphoto metadata: {:?}", metadata);
-            println!("immich metadata: {:?}", immich_item);
+            // println!("gphoto metadata: {:?}", metadata);
+            // println!("immich metadata: {:?}", immich_item);
         }
-        println!(
-            "{filename:12} \t\tmatches: {matches}/{} (gphoto {gphoto_id})",
-            res.assets.items.len()
-        );
+        // println!(
+        //     "{filename:12} \t\tmatches: {matches}/{} (gphoto {gphoto_id})",
+        //     res.assets.items.len()
+        // );
     }
-    Ok(())
+    Ok(rv)
 }
 
 async fn link_album_items(
@@ -201,12 +214,16 @@ async fn link_album_items(
         .bind(gphoto_album_id)
         .fetch_all(pool)
         .await?;
+
+    let mut ress: HashMap<_, usize> = HashMap::new();
     for gphoto_item in gphoto_items {
         let gphoto_id: &str = gphoto_item.try_get("id").unwrap();
         let filename: &str = gphoto_item.try_get("filename").unwrap();
         let metadata: &str = gphoto_item.try_get("metadata").unwrap();
-        link_item(api_config, gphoto_id, filename, metadata).await?;
+        let res = link_item(api_config, gphoto_id, filename, metadata).await?;
+        *ress.entry(res).or_default() += 1;
     }
+    println!("{:?}", ress);
     Ok(())
 }
 
@@ -276,7 +293,8 @@ async fn link_albums(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<
                 });
             }
             None => {
-                println!("not found {:?}, {}", name, id);
+                print!("not found {name}: ");
+                link_album_items(&pool, &api_config, &id).await?;
             }
         }
     }
@@ -319,7 +337,6 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
     link_albums(&pool, &api_config).await?;
-    link_album_items(&pool, &api_config, "ABZoRtEtjEIiQ8H3z5wIKoiB2hbaxaMgOa6r7EGxcOq5EqQ-XTRGeEqnhOv-g6fJ2Snb03YQZpQeVXajBZyPNYEMu7W-IgquZw").await?;
 
     Ok(())
 }
