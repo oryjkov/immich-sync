@@ -30,6 +30,13 @@ struct Args {
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
 #[serde(rename_all = "camelCase")]
+struct VideoMetadata {
+    camera_make: Option<String>,
+    camera_model: Option<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
+#[serde(rename_all = "camelCase")]
 struct PhotoMetadata {
     camera_make: Option<String>,
     camera_model: Option<String>,
@@ -75,6 +82,7 @@ struct ImageData {
     width: Option<String>,
     height: Option<String>,
     photo: Option<PhotoMetadata>,
+    video: Option<VideoMetadata>,
 }
 
 impl From<models::AssetResponseDto> for ImageData {
@@ -108,17 +116,29 @@ impl From<models::AssetResponseDto> for ImageData {
                     .flatten()
                     .map(|f| format!("{}", f as i64))
             }),
-            photo: Some(PhotoMetadata {
-                camera_make: exif.as_ref().and_then(|exif| exif.make.clone().flatten()),
-                camera_model: exif.as_ref().and_then(|exif| exif.model.clone().flatten()),
-                aperture_f_number: exif.as_ref().and_then(|exif| exif.f_number.flatten()),
-                focal_length: exif.as_ref().and_then(|exif| exif.focal_length.flatten()),
-                iso_equivalent: exif
-                    .as_ref()
-                    .and_then(|exif| exif.iso.flatten().map(|x| x as u32)),
-                exposure_time,
-                ..Default::default()
-            }),
+            photo: if value.r#type == models::AssetTypeEnum::Image {
+                Some(PhotoMetadata {
+                    camera_make: exif.as_ref().and_then(|exif| exif.make.clone().flatten()),
+                    camera_model: exif.as_ref().and_then(|exif| exif.model.clone().flatten()),
+                    aperture_f_number: exif.as_ref().and_then(|exif| exif.f_number.flatten()),
+                    focal_length: exif.as_ref().and_then(|exif| exif.focal_length.flatten()),
+                    iso_equivalent: exif
+                        .as_ref()
+                        .and_then(|exif| exif.iso.flatten().map(|x| x as u32)),
+                    exposure_time,
+                    ..Default::default()
+                })
+            } else {
+                None
+            },
+            video: if value.r#type == models::AssetTypeEnum::Video {
+                Some(VideoMetadata {
+                    camera_make: exif.as_ref().and_then(|exif| exif.make.clone().flatten()),
+                    camera_model: exif.as_ref().and_then(|exif| exif.model.clone().flatten()),
+                })
+            } else {
+                None
+            },
         }
     }
 }
@@ -159,6 +179,8 @@ async fn link_item(
             matches += 1;
         } else {
             println!("no match");
+            // println!("gphoto metadata: {:?}", gphoto_metadata);
+            // println!("immich metadata: {:?}", immich_metadata);
             println!("gphoto metadata: {:?}", metadata);
             println!("immich metadata: {:?}", immich_item);
         }
