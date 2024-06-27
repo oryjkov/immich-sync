@@ -114,9 +114,8 @@ async fn link_albums(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<
         .map(|album| (album.album_name, album.id))
         .collect::<Vec<_>>();
 
-    let mut x = immich_albums.iter().map(|(x, _)| x).collect::<Vec<_>>();
-    x.sort();
-    x.iter().map(|n| println!("{:?}", n)).count();
+    // Maps various version of the (immich) album title to immich album id. The title "as-is" takes
+    // precedence. We then lookup gphoto album title (variants) in that map.
     let mut m: HashMap<String, String> = HashMap::new();
 
     // Remove spaces - some albums have a trailing space.
@@ -138,10 +137,9 @@ async fn link_albums(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<
     for (name, id) in &immich_albums {
         m.insert(name.clone(), id.clone());
     }
-    // println!("{m:?}");
 
     let gphoto_albums = sqlx::query(
-        r#"SELECT id, title FROM albums WHERE id not in (SELECT gphoto_id FROM album_album_links)"#,
+        r#"SELECT id, title FROM albums WHERE id NOT IN (SELECT gphoto_id FROM album_album_links)"#,
     )
     .fetch_all(pool)
     .await?
@@ -173,7 +171,6 @@ async fn link_albums(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<
                     gphoto_id: id,
                     immich_id: immich_id.clone(),
                 });
-                // println!("found");
             }
             None => {
                 println!("not found {:?}", name);
