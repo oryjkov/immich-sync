@@ -1,33 +1,20 @@
 use anyhow::{anyhow, Context};
 use async_stream::try_stream;
+use clap::Parser;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
-use futures::pin_mut;
-use futures::FutureExt;
 use futures::StreamExt;
-use futures::TryFutureExt;
-use futures::TryStreamExt;
-use serde::Serialize;
-use std::sync::Arc;
-use tokio::fs::write;
-////use futures::TryStreamExt;
-use clap::Parser;
 use futures_core::stream::Stream;
-use std::env;
-use std::fs;
-use std::future::Future;
-use std::path::Path;
-use std::sync::Mutex;
-use std::time;
-
 use oauth2::basic::BasicClient;
-use oauth2::{RefreshToken, StandardTokenResponse, TokenResponse};
+use oauth2::{
+    ClientId, ClientSecret, RefreshToken, StandardTokenResponse, TokenResponse, TokenUrl,
+};
 use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::Pool;
-use sqlx::Row;
-use sqlx::Sqlite;
-
-use oauth2::{ClientId, ClientSecret, TokenUrl};
+use sqlx::{Pool, Row, Sqlite};
+use std::fs;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -130,6 +117,7 @@ impl GPClient {
                     page_size: Some(100),
                     page_token: token,
                 };
+                println!("requesting new page");
                 let r = gphotos_api::apis::default_api::search_media_items(&config, Some(search_req)).await?;
                 match r.media_items {
                     Some(media_items) => {
@@ -454,17 +442,20 @@ async fn main() -> anyhow::Result<()> {
                             Ok::<_, anyhow::Error>(id)
                         }
                     })
-                    .buffer_unordered((args.concurrency as f32).sqrt().round() as usize)
+                    .buffer_unordered(args.concurrency)
                     .collect::<Vec<_>>()
                     .await
                     .into_iter()
                     .filter_map(|x| x.ok())
                     .collect::<Vec<_>>();
-                println!("album {} count {}", album_id, album_items.len());
+                println!(
+                    "album '{}' done",
+                    row.try_get("title").unwrap_or("----".to_string())
+                );
                 (album_id.to_string(), album_items)
             }
         })
-        .buffer_unordered((args.concurrency as f32).sqrt().round() as usize)
+        .buffer_unordered(1) // it did not work well with more than 1 concurrent request.
         .then(|(album_id, album_items)| {
             let pool = pool.clone();
             async move {
@@ -507,7 +498,6 @@ async fn main() -> anyhow::Result<()> {
 
     let s = gpclient.media_items_stream();
     let media_items_results = s
-        // .take(5)
         .map(|media_item_or| {
             let p = pool.clone();
             async move { fetch(&media_item_or?, &p, path).await }
