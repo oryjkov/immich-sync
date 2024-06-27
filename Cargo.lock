@@ -977,6 +977,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-stream",
+ "unicode-normalization",
  "url",
 ]
 

@@ -33,3 +33,14 @@ sqlite-utils create-table sqlite.db album_items \
 sqlite-utils add-foreign-keys sqlite.db \
     album_items album_id albums id \
     album_items media_item_id media_items id
+
+sqlite-utils create-table sqlite.db album_album_links \
+    gphoto_id text \
+    immich_id text \
+    --not-null gphoto_id \
+    --not-null immich_id \
+    --pk=gphoto_id,immich_id \
+    --strict
+
+sqlite-utils add-foreign-keys sqlite.db \
+    album_album_links gphoto_id albums id
