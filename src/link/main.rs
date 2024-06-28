@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use colored::Colorize;
 use dotenvy::dotenv;
 use immich_api::apis::albums_api;
 use immich_api::apis::configuration;
@@ -145,22 +146,19 @@ impl From<models::AssetResponseDto> for ImageData {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum LookupResult {
-    NotFound,
-    NotMatched,
-    Matched,
-    MultipleMatched,
+    NotFound,        // Filename is not found in immich
+    NotMatched,      // Filename found but none of the candidates had a matching metadata
+    Matched,         // Metadata matched with exactly one candidate
+    MultipleMatched, // Metadata matched with multiple candidates
 }
 
 async fn link_item(
     api_config: &Configuration,
-    gphoto_id: &str,
     filename: &str,
     metadata: &str,
 ) -> Result<LookupResult> {
     let gphoto_metadata: ImageData = serde_json::from_str(metadata)
         .with_context(|| format!("failed to parse gphoto metadata"))?;
-
-    let mut matches = 0;
 
     let search_req = models::MetadataSearchDto {
         original_file_name: Some(filename.to_string()),
@@ -169,38 +167,25 @@ async fn link_item(
     };
     let mut rv = LookupResult::NotFound;
     let res = search_api::search_metadata(api_config, search_req).await?;
-    // println!("found {} immich asset(s)", res.assets.items.len());
     for immich_item in &res.assets.items {
         if rv == LookupResult::NotFound {
             rv = LookupResult::NotMatched;
         }
-        // let id = immich_item.id.clone();
         let immich_metadata = ImageData::from(immich_item.clone());
-        let mut immich_metadata_flipped = immich_metadata.clone();
-        swap(
-            &mut immich_metadata_flipped.width,
-            &mut immich_metadata_flipped.height,
-        );
 
-        // print!("immich asset id {}: ", id);
-        if gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped {
+        if match_metadata(&gphoto_metadata, &immich_metadata) {
             if rv == LookupResult::NotMatched {
                 rv = LookupResult::Matched;
             } else {
                 rv = LookupResult::MultipleMatched;
             }
-            // println!("match");
-            matches += 1;
         } else {
-            // println!("gphoto metadata: {:?}", gphoto_metadata);
-            // println!("immich metadata: {:?}", immich_metadata);
+            // println!("{}", filename.yellow());
+            // println!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
+            // println!("{} {:?}", "immich metadata:".green(), immich_metadata);
             // println!("gphoto metadata: {:?}", metadata);
             // println!("immich metadata: {:?}", immich_item);
         }
-        // println!(
-        //     "{filename:12} \t\tmatches: {matches}/{} (gphoto {gphoto_id})",
-        //     res.assets.items.len()
-        // );
     }
     Ok(rv)
 }
@@ -220,11 +205,47 @@ async fn link_album_items(
         let gphoto_id: &str = gphoto_item.try_get("id").unwrap();
         let filename: &str = gphoto_item.try_get("filename").unwrap();
         let metadata: &str = gphoto_item.try_get("metadata").unwrap();
-        let res = link_item(api_config, gphoto_id, filename, metadata).await?;
+        let res = link_item(api_config, filename, metadata).await?;
         *ress.entry(res).or_default() += 1;
     }
     println!("{:?}", ress);
     Ok(())
+}
+
+fn match_metadata(gphoto_metadata: &ImageData, immich_metadata: &ImageData) -> bool {
+    let mut gphoto_metadata = gphoto_metadata.clone();
+    let mut immich_metadata = immich_metadata.clone();
+    let mut immich_metadata_flipped = immich_metadata.clone();
+    swap(
+        &mut immich_metadata_flipped.width,
+        &mut immich_metadata_flipped.height,
+    );
+    // Immich sometimes has empty strings for make/model.
+    for m in vec![&mut gphoto_metadata, &mut immich_metadata] {
+        m.photo.as_mut().map(|x| {
+            if x.camera_make == Some("".to_string()) {
+                x.camera_make = None
+            }
+        });
+        m.photo.as_mut().map(|x| {
+            if x.camera_model == Some("".to_string()) {
+                x.camera_model = None
+            }
+        });
+    }
+
+    if gphoto_metadata.video.is_some() && immich_metadata.video.is_some() {
+        // Immich has problems extracting some of the video metadata.
+        gphoto_metadata.video = None;
+        immich_metadata.video = None;
+        return gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped;
+    }
+
+    if gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped {
+        return true;
+    } else {
+        return false;
+    }
 }
 
 async fn link_albums(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<()> {
@@ -293,7 +314,7 @@ async fn link_albums(pool: &Pool<Sqlite>, api_config: &Configuration) -> Result<
                 });
             }
             None => {
-                print!("not found {name}: ");
+                print!("{:?}: ", name);
                 link_album_items(&pool, &api_config, &id).await?;
             }
         }
