@@ -147,9 +147,10 @@ impl From<models::AssetResponseDto> for ImageData {
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum LookupResult {
     NotFound,        // Filename is not found in immich
-    NotMatched,      // Filename found but none of the candidates had a matching metadata
-    Matched,         // Metadata matched with exactly one candidate
-    MultipleMatched, // Metadata matched with multiple candidates
+    FoundMultiple, // Filename found multiple matches but none of the candidates had a matching metadata
+    FoundUnique,   // Filename found a single match but no matching metadata
+    MatchedMultiple, // Metadata matched with multiple candidates
+    MatchedUnique, // Metadata matched with exactly one candidate
 }
 
 async fn link_item(
@@ -167,18 +168,20 @@ async fn link_item(
     };
     let mut rv = LookupResult::NotFound;
     let res = search_api::search_metadata(api_config, search_req).await?;
+    if res.assets.items.len() == 1 {
+        rv = LookupResult::FoundUnique;
+    } else if res.assets.items.len() > 1 {
+        rv = LookupResult::FoundMultiple;
+    }
     for immich_item in &res.assets.items {
-        if rv == LookupResult::NotFound {
-            rv = LookupResult::NotMatched;
-        }
         let immich_metadata = ImageData::from(immich_item.clone());
 
         if match_metadata(&gphoto_metadata, &immich_metadata) {
-            if rv == LookupResult::NotMatched {
-                rv = LookupResult::Matched;
+            rv = if rv == LookupResult::MatchedUnique {
+                LookupResult::MatchedMultiple
             } else {
-                rv = LookupResult::MultipleMatched;
-            }
+                LookupResult::MatchedUnique
+            };
         } else {
             // println!("{}", filename.yellow());
             // println!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
