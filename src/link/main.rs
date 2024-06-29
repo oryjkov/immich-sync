@@ -7,6 +7,7 @@ use immich_api::apis::albums_api;
 use immich_api::apis::configuration;
 use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
+use immich_api::apis::users_api;
 use immich_api::models;
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -14,6 +15,7 @@ use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use std::env;
 use std::mem::swap;
+use std::str::FromStr;
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Parser, Debug)]
@@ -360,7 +362,17 @@ async fn main() -> Result<()> {
         base_path: args.immich_url,
         ..Default::default()
     };
-    link_albums(&pool, &api_config).await?;
+    // link_albums(&pool, &api_config).await?;
+    let u = users_api::get_my_user(&api_config).await?;
+    println!("{:?}", u);
+    let req = models::CreateAlbumDto {
+        album_name: "test-album-create".to_string(),
+        asset_ids: Some(vec![]),
+        description: Some("test description".to_string()),
+        album_users: None, // When I passed in the current user, album page had 2 users registered
+    };
+    let res = albums_api::create_album(&api_config, req).await?;
+    println!("{:?}", res);
 
     Ok(())
 }
