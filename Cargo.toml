@@ -3,6 +3,9 @@ name = "immich-sync"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "lib"
+
 [[bin]]
 name = "client"
 path = "src/main.rs"

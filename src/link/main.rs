@@ -357,6 +357,7 @@ async fn link_albums(
 
     Ok(())
 }
+
 async fn upload(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
