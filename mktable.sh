@@ -44,3 +44,10 @@ sqlite-utils create-table sqlite.db album_album_links \
 
 sqlite-utils add-foreign-keys sqlite.db \
     album_album_links gphoto_id albums id
+
+sqlite-utils create-table sqlite.db created_albums \
+    immich_id text \
+    creation_time integer \
+    --not-null immich_id \
+    --pk=immich_id \
+    --strict
