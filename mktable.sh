@@ -1,74 +1,38 @@
-sqlite-utils create-table sqlite.db media_items \
-    filename text \
-    mime_type text \
-    metadata text \
-    contributor text \
-    description text \
-    id text \
-    local_file text \
-    --not-null id \
-    --not-null local_file \
-    --pk=id \
-    --strict
-
-sqlite-utils create-table sqlite.db albums \
-    title text \
-    media_items_count integer \
-    share_info text \
-    is_shared integer \
-    id text \
-    cover_photo_media_item_id text \
-    --not-null id \
-    --pk=id \
-    --strict
-
-sqlite-utils create-table sqlite.db album_items \
-    album_id text \
-    media_item_id text \
-    --not-null album_id \
-    --not-null media_item_id \
-    --pk=album_id,media_item_id \
-    --strict
-
-sqlite-utils add-foreign-keys sqlite.db \
-    album_items album_id albums id \
-    album_items media_item_id media_items id
-
-# Links between gphoto albums and immich albums (either created by us or
-# already existing).
-sqlite-utils create-table sqlite.db album_album_links \
-    gphoto_id text \
-    immich_id text \
-    --not-null gphoto_id \
-    --not-null immich_id \
-    --pk=gphoto_id,immich_id \
-    --strict
-
-sqlite-utils add-foreign-keys sqlite.db \
-    album_album_links gphoto_id albums id
-
-# Albums that we created
-sqlite-utils create-table sqlite.db created_albums \
-    immich_id text \
-    creation_time integer \
-    --not-null immich_id \
-    --pk=immich_id \
-    --strict
-
-# Links between gphoto items and immich items that we uploaded.
-sqlite-utils create-table sqlite.db item_item_links \
-    gphoto_id text \
-    immich_id text \
-    --not-null gphoto_id \
-    --not-null immich_id \
-    --pk=gphoto_id,immich_id \
-    --strict
-
-sqlite-utils add-foreign-keys sqlite.db \
-    item_item_links gphoto_id media_items id
-
+cat | sqlite3 sqlite.db <<EOF
+CREATE TABLE [media_items] (
+   [filename] TEXT,
+   [mime_type] TEXT,
+   [metadata] TEXT,
+   [contributor] TEXT,
+   [description] TEXT,
+   [id] TEXT PRIMARY KEY NOT NULL,
+   [local_file] TEXT NOT NULL
+) STRICT;
+CREATE TABLE [albums] (
+   [title] TEXT,
+   [media_items_count] INTEGER,
+   [share_info] TEXT,
+   [is_shared] INTEGER,
+   [id] TEXT PRIMARY KEY NOT NULL,
+   [cover_photo_media_item_id] TEXT
+) STRICT;
+CREATE TABLE IF NOT EXISTS "album_items" (
+   [album_id,media_item_id] INTEGER PRIMARY KEY,
+   [album_id] TEXT NOT NULL REFERENCES [albums]([id]),
+   [media_item_id] TEXT NOT NULL REFERENCES [media_items]([id])
+) STRICT;
+CREATE TABLE IF NOT EXISTS "album_album_links" (
+   [gphoto_id] TEXT NOT NULL REFERENCES [albums]([id]),
+   [immich_id] TEXT NOT NULL,
+   PRIMARY KEY (gphoto_id,immich_id)
+) STRICT;
+CREATE TABLE [created_albums] (
+   [immich_id] TEXT PRIMARY KEY NOT NULL,
+   [creation_time] INTEGER
+) STRICT;
 CREATE TABLE IF NOT EXISTS "item_item_links" (
    [gphoto_id] TEXT NOT NULL REFERENCES [media_items]([id]),
    [immich_id] TEXT NOT NULL,
    PRIMARY KEY (gphoto_id, immich_id)
 ) STRICT;
+EOF
