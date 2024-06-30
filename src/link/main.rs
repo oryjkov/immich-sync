@@ -2,8 +2,12 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use colored::Colorize;
+use crypto::digest::Digest;
+use crypto::sha1::Sha1;
 use dotenvy::dotenv;
+use gphotos_api::models::media_item;
 use immich_api::apis::albums_api;
+use immich_api::apis::assets_api;
 use immich_api::apis::configuration;
 use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
@@ -29,6 +33,9 @@ struct Args {
 
     #[arg(long, default_value = None)]
     album_gphoto_id: Option<String>,
+
+    #[arg(long, default_value = None)]
+    gphoto_item_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -358,14 +365,62 @@ async fn link_albums(
     Ok(())
 }
 
-async fn upload(
+async fn download_and_upload(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     gphoto_item_id: &str,
+    gphoto_client: &lib::GPClient,
 ) -> Result<()> {
-    //
     // Download gphoto id
+    let (gphoto_item, bytes) = gphoto_client
+        .fetch_media_item(gphoto_item_id)
+        .await
+        .with_context(|| format!("failed to fetch gphoto item id {}", gphoto_item_id))?;
+
+    let creation_time = gphoto_item
+        .media_metadata
+        .as_ref()
+        .unwrap()
+        .creation_time
+        .as_ref()
+        .unwrap();
+
+    let asset_data = reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(
+        gphoto_item
+            .filename
+            .unwrap_or(format!("no name on gphoto.name")),
+    );
+
+    let mut hasher = Sha1::new();
+    hasher.input(&bytes.to_vec());
+
     // Upload to immich
+    let res = assets_api::upload_asset(
+        api_config,
+        asset_data,
+        &hasher.result_str(),
+        "immich-sync",
+        creation_time.clone(),
+        creation_time.clone(),
+        None,
+        Some(&hasher.result_str()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .with_context(|| format!("upload_asset to immich failed"))?;
+    println!("upload result: {:?}", res);
+    sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id) VALUES ($1, $2)"#)
+        .bind(gphoto_item_id)
+        .bind(&res.id)
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to save item_item link to the db"))?;
 
     Ok(())
 }
@@ -432,6 +487,10 @@ async fn main() -> Result<()> {
     };
     if let Some(id) = args.album_gphoto_id {
         link_albums(&pool, &api_config, |x| x == id).await?;
+    }
+    if let Some(gphoto_item_id) = args.gphoto_item_id {
+        let gphoto_client = lib::GPClient::new_from_file("auth_token.json").await?;
+        download_and_upload(&pool, &api_config, &gphoto_item_id, &gphoto_client).await?;
     }
     // link_albums(&pool, &api_config).await?;
     Ok(())

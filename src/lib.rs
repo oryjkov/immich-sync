@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context};
 use async_stream::try_stream;
+use bytes::Bytes;
 use futures::StreamExt;
 use futures_core::stream::Stream;
 use oauth2::basic::BasicClient;
@@ -88,7 +89,7 @@ impl GPClient {
         let token = AuthToken::new(
             saved_token
                 .refresh_token()
-                .ok_or(anyhow::anyhow!("can't find refresh token"))?
+                .ok_or(anyhow!("can't find refresh token"))?
                 .secret(),
         );
 
@@ -212,5 +213,40 @@ impl GPClient {
                 }
             }
         }
+    }
+    pub async fn fetch_media_item(
+        &self,
+        gphoto_id: &str,
+    ) -> anyhow::Result<(gphotos_api::models::MediaItem, Bytes)> {
+        let config = self.get_config().await?;
+        let media_item = gphotos_api::apis::default_api::get_media_item(&config, gphoto_id)
+            .await
+            .with_context(|| format!("failed to get media item id {}", gphoto_id))?;
+        let metadata = media_item
+            .media_metadata
+            .as_ref()
+            .ok_or(anyhow!(format!("missing media metadata from response")))?;
+        let suffix = if metadata.photo.is_some() {
+            "=d"
+        } else if metadata.video.is_some() {
+            "=dv"
+        } else {
+            Err(anyhow!("neither photo nor video"))?
+        };
+        let base_url = media_item
+            .base_url
+            .as_ref()
+            .ok_or(anyhow!(format!("missing base url")))?;
+        let fetch_url = format!("{}{}", base_url, suffix);
+
+        let bytes = config
+            .client
+            .get(fetch_url)
+            .timeout(time::Duration::from_secs(300))
+            .send()
+            .await?
+            .bytes()
+            .await?;
+        Ok((media_item, bytes))
     }
 }
