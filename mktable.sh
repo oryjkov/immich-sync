@@ -17,9 +17,9 @@ CREATE TABLE [albums] (
    [cover_photo_media_item_id] TEXT
 ) STRICT;
 CREATE TABLE IF NOT EXISTS "album_items" (
-   [album_id,media_item_id] INTEGER PRIMARY KEY,
    [album_id] TEXT NOT NULL REFERENCES [albums]([id]),
    [media_item_id] TEXT NOT NULL REFERENCES [media_items]([id])
+   PRIMARY KEY (album_id,media_item_id),
 ) STRICT;
 CREATE TABLE IF NOT EXISTS "album_album_links" (
    [gphoto_id] TEXT NOT NULL REFERENCES [albums]([id]),
