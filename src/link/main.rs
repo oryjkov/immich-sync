@@ -12,6 +12,7 @@ use immich_api::apis::configuration;
 use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
 use immich_api::models;
+use log::{debug, error, info, warn};
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
@@ -32,7 +33,7 @@ struct Args {
     sqlite: String,
 
     #[arg(long, default_value = None)]
-    album_gphoto_id: Option<String>,
+    gphoto_album_id: Option<String>,
 
     #[arg(long, default_value = None)]
     gphoto_item_id: Option<String>,
@@ -205,11 +206,11 @@ async fn link_item(
                 _ => LookupResult::MatchedUnique(immich_item.id.clone()),
             };
         } else {
-            // println!("{}", filename.yellow());
-            // println!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
-            // println!("{} {:?}", "immich metadata:".green(), immich_metadata);
-            // println!("gphoto metadata: {:?}", metadata);
-            // println!("immich metadata: {:?}", immich_item);
+            debug!("{}", filename.yellow());
+            debug!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
+            debug!("{} {:?}", "immich metadata:".green(), immich_metadata);
+            debug!("raw gphoto metadata: {:?}", metadata);
+            debug!("raw immich metadata: {:?}", immich_item);
         }
     }
     Ok(rv)
@@ -226,6 +227,7 @@ async fn link_album_items(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     gphoto_album_id: &str,
+    album_name: &str,
 ) -> Result<Vec<LinkedItem>> {
     let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items where id IN (select media_item_id from album_items WHERE album_id = $1)"#)
         .bind(gphoto_album_id)
@@ -250,7 +252,7 @@ async fn link_album_items(
             link_type: res,
         });
     }
-    println!("{:?}", ress);
+    info!("result from linking album {album_name}: {:?}", ress);
     Ok(link_results)
 }
 
@@ -290,8 +292,8 @@ fn match_metadata(gphoto_metadata: &ImageData, immich_metadata: &ImageData) -> b
     }
 }
 
-// Goes through all of the albums in gphotos that are not yet linked with an immich
-// album and tries to link them. Linking is done based on the album name only.
+// Goes through all of the albums in gphotos that pass the filter f and are not linked with
+// an immich album and tries to link them. Linking is done based on the album name only.
 async fn link_albums(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
@@ -388,7 +390,7 @@ async fn link_albums(
         .await?;
     }
     tx.commit().await?;
-    println!("linked {} albums", links.len());
+    info!("linked {} albums", links.len());
 
     Ok(not_found)
 }
@@ -465,7 +467,7 @@ async fn download_and_upload(
     )
     .await
     .with_context(|| format!("upload_asset to immich failed"))?;
-    println!("upload result: {:?}", res);
+    info!("upload result: {:?}", res);
     sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id) VALUES ($1, $2)"#)
         .bind(gphoto_item_id)
         .bind(&res.id)
@@ -522,6 +524,7 @@ async fn create_linked_album(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    colog::init();
     dotenv().expect(".env file not found");
     let args = Args::parse();
     let pool = SqlitePoolOptions::new()
@@ -538,12 +541,12 @@ async fn main() -> Result<()> {
         base_path: args.immich_url,
         ..Default::default()
     };
-    if let Some(id) = args.album_gphoto_id {
+    if let Some(id) = args.gphoto_album_id {
         link_albums(&pool, &api_config, |x| x == id).await?;
     }
     if let Some(gphoto_item_id) = args.gphoto_item_id {
         let gphoto_client = lib::GPClient::new_from_file("auth_token.json").await?;
-        download_and_upload(&pool, &api_config, &gphoto_item_id, &gphoto_client).await?;
+        download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
     }
     // link_albums(&pool, &api_config).await?;
     Ok(())
