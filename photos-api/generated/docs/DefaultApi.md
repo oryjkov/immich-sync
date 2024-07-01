@@ -5,6 +5,7 @@ All URIs are relative to *https://photoslibrary.googleapis.com/v1*
 Method | HTTP request | Description
 ------------- | ------------- | -------------
 [**download_media_item**](DefaultApi.md#download_media_item) | **GET** /mediaItems/{mediaItemId}/download | Download media item
+[**get_album**](DefaultApi.md#get_album) | **GET** /albums/{albumId} | Get album
 [**get_media_item**](DefaultApi.md#get_media_item) | **GET** /mediaItems/{mediaItemId} | Get media item metadata
 [**list_albums**](DefaultApi.md#list_albums) | **GET** /albums | List albums
 [**list_media_items**](DefaultApi.md#list_media_items) | **GET** /mediaItems | List all media items
@@ -37,6 +38,34 @@ Name | Type | Description  | Required | Notes
 
 - **Content-Type**: Not defined
 - **Accept**: application/octet-stream
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+
+## get_album
+
+> models::Album get_album(album_id)
+Get album
+
+### Parameters
+
+
+Name | Type | Description  | Required | Notes
+------------- | ------------- | ------------- | ------------- | -------------
+**album_id** | **String** | Identifier of the album to be requested. | [required] |
+
+### Return type
+
+[**models::Album**](Album.md)
+
+### Authorization
+
+[oauth2](../README.md#oauth2)
+
+### HTTP request headers
+
+- **Content-Type**: Not defined
+- **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 

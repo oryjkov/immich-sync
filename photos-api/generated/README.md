@@ -27,6 +27,7 @@ All URIs are relative to *https://photoslibrary.googleapis.com/v1*
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 *DefaultApi* | [**download_media_item**](docs/DefaultApi.md#download_media_item) | **GET** /mediaItems/{mediaItemId}/download | Download media item
+*DefaultApi* | [**get_album**](docs/DefaultApi.md#get_album) | **GET** /albums/{albumId} | Get album
 *DefaultApi* | [**get_media_item**](docs/DefaultApi.md#get_media_item) | **GET** /mediaItems/{mediaItemId} | Get media item metadata
 *DefaultApi* | [**list_albums**](docs/DefaultApi.md#list_albums) | **GET** /albums | List albums
 *DefaultApi* | [**list_media_items**](docs/DefaultApi.md#list_media_items) | **GET** /mediaItems | List all media items

@@ -122,6 +122,40 @@
         ]
       }
     },
+    "/albums/{albumId}": {
+      "get": {
+        "summary": "Get album",
+        "operationId": "getAlbum",
+        "parameters": [
+          {
+            "name": "albumId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Identifier of the album to be requested."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Album returned successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Album"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": ["https://www.googleapis.com/auth/photoslibrary.readonly"]
+          }
+        ]
+      }
+    },
     "/albums": {
       "get": {
         "summary": "List albums",
