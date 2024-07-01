@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS "album_items" (
 CREATE TABLE IF NOT EXISTS "album_album_links" (
    [gphoto_id] TEXT NOT NULL REFERENCES [albums]([id]),
    [immich_id] TEXT NOT NULL,
-   PRIMARY KEY (gphoto_id,immich_id)
+   UNIQUE(gphoto_id, immich_id)
+   PRIMARY KEY (gphoto_id)
 ) STRICT;
 CREATE TABLE [created_albums] (
    [immich_id] TEXT PRIMARY KEY NOT NULL,
@@ -33,6 +34,7 @@ CREATE TABLE [created_albums] (
 CREATE TABLE IF NOT EXISTS "item_item_links" (
    [gphoto_id] TEXT NOT NULL REFERENCES [media_items]([id]),
    [immich_id] TEXT NOT NULL,
-   PRIMARY KEY (gphoto_id, immich_id)
+   UNIQUE(gphoto_id, immich_id)
+   PRIMARY KEY (gphoto_id)
 ) STRICT;
 EOF
