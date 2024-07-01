@@ -22,6 +22,7 @@ struct SecretJs {
     client_secret: String,
 }
 
+// Authentication token that takes care of refreshing itself.
 pub struct AuthToken {
     pub token: String,
     expires_at: std::time::Instant,
@@ -248,5 +249,12 @@ impl GPClient {
             .bytes()
             .await?;
         Ok((media_item, bytes))
+    }
+
+    pub async fn get_album(&self, album_id: &str) -> anyhow::Result<gphotos_api::models::Album> {
+        let config = self.get_config().await?;
+        gphotos_api::apis::default_api::get_album(&config, album_id)
+            .await
+            .with_context(|| format!("failed to get album id {}", album_id))
     }
 }
