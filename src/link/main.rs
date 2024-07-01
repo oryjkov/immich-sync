@@ -155,18 +155,32 @@ impl From<models::AssetResponseDto> for ImageData {
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 enum LookupResult {
-    NotFound,              // Filename is not found in immich
+    NotFound,                // Filename is not found in immich
     FoundMultiple, // Filename found multiple matches but none of the candidates had a matching metadata
     FoundUnique(String), // Filename found a single match but no matching metadata
     MatchedMultiple, // Metadata matched with multiple candidates
     MatchedUnique(String), // Metadata matched with exactly one candidate
+    MatchedUniqueDB(String), // Matched an item from the local db.
 }
 
+// Links a media item from google photos to a immich item. Linking is done by:
+// 1. local DB mapping (for items that we have created),
+// 2. filename and metadata.
 async fn link_item(
+    pool: &Pool<Sqlite>,
     api_config: &Configuration,
+    gphoto_id: &str,
     filename: &str,
     metadata: &str,
 ) -> Result<LookupResult> {
+    let local_match = sqlx::query(r#"SELECT immich_id FROM where gphoto_id = $1"#)
+        .bind(gphoto_id)
+        .fetch_optional(pool)
+        .await?;
+    if let Some(immich_id) = local_match {
+        return Ok(LookupResult::MatchedUniqueDB(immich_id.get("immich_id")));
+    }
+
     let gphoto_metadata: ImageData = serde_json::from_str(metadata)
         .with_context(|| format!("failed to parse gphoto metadata"))?;
 
@@ -201,11 +215,18 @@ async fn link_item(
     Ok(rv)
 }
 
+struct LinkedItem {
+    gphoto_id: String,
+    link_type: LookupResult,
+}
+// Tries to link all media items in gphoto album `gphoto_album_id` to immich media items.
+// Returs the list of all "link" results, the return value has one element for each media
+// item in the given gphoto album.
 async fn link_album_items(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     gphoto_album_id: &str,
-) -> Result<Vec<(String, LookupResult)>> {
+) -> Result<Vec<LinkedItem>> {
     let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items where id IN (select media_item_id from album_items WHERE album_id = $1)"#)
         .bind(gphoto_album_id)
         .fetch_all(pool)
@@ -217,14 +238,17 @@ async fn link_album_items(
         let gphoto_id: &str = gphoto_item.try_get("id").unwrap();
         let filename: &str = gphoto_item.try_get("filename").unwrap();
         let metadata: &str = gphoto_item.try_get("metadata").unwrap();
-        let res = link_item(api_config, filename, metadata).await?;
+        let res = link_item(pool, api_config, gphoto_id, filename, metadata).await?;
         let anon_res = match res {
             LookupResult::FoundUnique(_) => LookupResult::FoundUnique("_".to_string()),
             LookupResult::MatchedUnique(_) => LookupResult::MatchedUnique("_".to_string()),
             _ => res.clone(),
         };
         *ress.entry(anon_res).or_default() += 1;
-        link_results.push((gphoto_id.to_string(), res));
+        link_results.push(LinkedItem {
+            gphoto_id: gphoto_id.to_string(),
+            link_type: res,
+        });
     }
     println!("{:?}", ress);
     Ok(link_results)
@@ -266,11 +290,13 @@ fn match_metadata(gphoto_metadata: &ImageData, immich_metadata: &ImageData) -> b
     }
 }
 
+// Goes through all of the albums in gphotos that are not yet linked with an immich
+// album and tries to link them. Linking is done based on the album name only.
 async fn link_albums(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     f: impl Fn(&str) -> bool,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let res = albums_api::get_all_albums(&api_config, None, None).await?;
     let immich_albums = res
         .into_iter()
@@ -317,6 +343,7 @@ async fn link_albums(
         immich_id: String,
     }
     let mut links = vec![];
+    let mut not_found = vec![];
     for (name, gphoto_album_id) in gphoto_albums {
         let nospace_name = name
             .split(' ')
@@ -338,7 +365,8 @@ async fn link_albums(
             }
             None => {
                 print!("{:?}: ", name);
-                let linked_items = link_album_items(&pool, &api_config, &gphoto_album_id).await?;
+                not_found.push(gphoto_album_id);
+                // let linked_items = link_album_items(&pool, &api_config, &gphoto_album_id).await?;
                 // let immich_album_id =
                 //     create_linked_album(pool, api_config, &gphoto_album_id, &name).await?;
                 // add_to_album(pool, api_config, &immich_album_id, &linked_items).await?;
@@ -362,14 +390,37 @@ async fn link_albums(
     tx.commit().await?;
     println!("linked {} albums", links.len());
 
+    Ok(not_found)
+}
+
+// Copies (downloads from gphoto and uploads to immich) all items given in `linked_items` and
+// associates them with the immich album identified `immich_album_id`.
+// TODO: this is WIP.
+// TODO: which items to copy? NotFound only?
+async fn copy_all_to_album(
+    pool: &Pool<Sqlite>,
+    api_config: &Configuration,
+    gphoto_client: &lib::GPClient,
+    immich_album_id: &str,
+    linked_items: &[LinkedItem],
+) -> Result<()> {
+    for linked_item in linked_items {
+        if linked_item.link_type != LookupResult::NotFound {
+            break;
+        }
+        download_and_upload(pool, api_config, gphoto_client, &linked_item.gphoto_id).await?;
+    }
     Ok(())
 }
 
+// Downloads a media_item identified by `gphoto_id` from google photos and uploads it
+// to immich. The newly created mapping (gphoto_id <=> immich_id) is stored in the local
+// database.
 async fn download_and_upload(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
-    gphoto_item_id: &str,
     gphoto_client: &lib::GPClient,
+    gphoto_item_id: &str,
 ) -> Result<()> {
     // Download gphoto id
     let (gphoto_item, bytes) = gphoto_client
@@ -425,6 +476,8 @@ async fn download_and_upload(
     Ok(())
 }
 
+// Creates an immich album that named `title` that is then linked (in the local database) to
+// a gphoto album identified by `gphoto_id`.
 async fn create_linked_album(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
