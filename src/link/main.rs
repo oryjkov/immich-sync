@@ -430,8 +430,6 @@ async fn copy_all_to_album(
                 info!("Will copy item {:?}", linked_item);
                 work.push(linked_item.gphoto_id.clone());
             }
-            // Re-do album association anyways since we are certain of the mapping here.
-            LookupResult::MatchedUniqueDB(_) => {}
             _ => {
                 debug!("Assuming item already exists in gphotos, skipping it");
                 continue;
@@ -440,7 +438,7 @@ async fn copy_all_to_album(
     }
     let z = stream::iter(work)
         .map(|id| c.do_work(id))
-        .buffer_unordered(100)
+        .buffer_unordered(100) // 100 is just a large number
         .collect::<Vec<_>>()
         .await;
     let mut result = z
@@ -448,30 +446,26 @@ async fn copy_all_to_album(
         .filter_map(|r| match r {
             Ok(immich_id) => Some(immich_id),
             Err(e) => {
-                error!("{:?}", e);
+                error!("copy failed {:?}", e);
                 None
             }
         })
-        .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
         .collect::<Vec<_>>();
-
+    info!("uploaded {} items", result.len());
     for linked_item in linked_items {
-        let immich_id = match &linked_item.link_type {
-            LookupResult::NotFound => {
-                info!("Will copy item {:?}", linked_item);
-                // download_and_upload(pool, api_config, gphoto_client, &linked_item.gphoto_id).await?
-                continue;
-            }
+        result.push(match &linked_item.link_type {
             // Re-do album association anyways since we are certain of the mapping here.
             LookupResult::MatchedUniqueDB(immich_id) => immich_id.clone(),
             _ => {
-                debug!("Assuming item already exists in gphotos, skipping it");
                 continue;
             }
-        };
-        result.push(uuid::Uuid::parse_str(&immich_id.0)?);
+        });
     }
-    info!("uploaded {} items", result.len());
+    let result = result
+        .into_iter()
+        .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
+        .collect::<Vec<_>>();
+
     if result.len() > 0 {
         let res = albums_api::add_assets_to_album(
             api_config,
@@ -538,7 +532,7 @@ async fn download_and_upload(
     )
     .await
     .with_context(|| format!("upload_asset to immich failed"))?;
-    info!("upload result: {:?}", res);
+    debug!("upload result: {:?}", res);
     sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id) VALUES ($1, $2)"#)
         .bind(&gphoto_item_id.0)
         .bind(&res.id)
@@ -628,7 +622,11 @@ async fn main() -> Result<()> {
             let pool = pool.clone();
             let api_config = api_config.clone();
             let gphoto_client = gphoto_client.clone();
-            async move { download_and_upload(&pool, &api_config, &gphoto_client, &id).await }
+            async move {
+                download_and_upload(&pool, &api_config, &gphoto_client, &id)
+                    .await
+                    .with_context(|| format!("copy failed for ite {}", id))
+            }
         });
         cop
     };

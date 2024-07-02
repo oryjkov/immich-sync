@@ -1017,14 +1017,11 @@ pub async fn upload_asset(
         local_var_form = local_var_form.text("livePhotoVideoId", local_var_param_value.to_string());
     }
     local_var_form = local_var_form.part("assetData", asset_data);
-    println!("form: {:?}", local_var_form);
     // TODO: support file upload for 'sidecarData' parameter
     local_var_req_builder = local_var_req_builder.multipart(local_var_form);
 
     let local_var_req = local_var_req_builder.build()?;
-    println!("req: {:?}", local_var_req);
     let local_var_resp = local_var_client.execute(local_var_req).await;
-    println!("resp: {:?}", local_var_resp);
     let local_var_resp = local_var_resp?;
 
     let local_var_status = local_var_resp.status();
