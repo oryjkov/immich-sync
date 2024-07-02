@@ -11,5 +11,5 @@ pub mod types {
     pub struct GPhotoAlbumId(pub String);
 }
 
-mod copier;
+pub mod copier;
 pub mod gpclient;

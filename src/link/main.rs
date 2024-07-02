@@ -5,6 +5,7 @@ use colored::Colorize;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
 use dotenvy::dotenv;
+use futures::stream;
 use futures::StreamExt;
 use immich_api::apis::albums_api;
 use immich_api::apis::assets_api;
@@ -12,6 +13,7 @@ use immich_api::apis::configuration;
 use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
 use immich_api::models;
+use lib::copier::Copier;
 use lib::gpclient::GPClient;
 use lib::types::*;
 use log::{debug, error, info};
@@ -416,18 +418,49 @@ async fn save_album_links(
 // TODO: this is WIP.
 // TODO: which items to copy? NotFound only?
 async fn copy_all_to_album(
-    pool: &Pool<Sqlite>,
     api_config: &Configuration,
-    gphoto_client: &GPClient,
+    c: Copier<GPhotoItemId, ImmichItemId>,
     immich_album_id: &ImmichAlbumId,
     linked_items: &[LinkedItem],
 ) -> Result<()> {
-    let mut result = vec![];
+    let mut work = vec![];
+    for linked_item in linked_items {
+        match &linked_item.link_type {
+            LookupResult::NotFound => {
+                info!("Will copy item {:?}", linked_item);
+                work.push(linked_item.gphoto_id.clone());
+            }
+            // Re-do album association anyways since we are certain of the mapping here.
+            LookupResult::MatchedUniqueDB(_) => {}
+            _ => {
+                debug!("Assuming item already exists in gphotos, skipping it");
+                continue;
+            }
+        }
+    }
+    let z = stream::iter(work)
+        .map(|id| c.copy_item_to_immich(id))
+        .buffer_unordered(100)
+        .collect::<Vec<_>>()
+        .await;
+    let mut result = z
+        .into_iter()
+        .filter_map(|r| match r {
+            Ok(immich_id) => Some(immich_id),
+            Err(e) => {
+                error!("{:?}", e);
+                None
+            }
+        })
+        .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
+        .collect::<Vec<_>>();
+
     for linked_item in linked_items {
         let immich_id = match &linked_item.link_type {
             LookupResult::NotFound => {
                 info!("Will copy item {:?}", linked_item);
-                download_and_upload(pool, api_config, gphoto_client, &linked_item.gphoto_id).await?
+                // download_and_upload(pool, api_config, gphoto_client, &linked_item.gphoto_id).await?
+                continue;
             }
             // Re-do album association anyways since we are certain of the mapping here.
             LookupResult::MatchedUniqueDB(immich_id) => immich_id.clone(),
@@ -587,6 +620,19 @@ async fn main() -> Result<()> {
     };
     let gphoto_client = GPClient::new_from_file("auth_token.json").await?;
 
+    let cop = {
+        let pool = pool.clone();
+        let api_config = api_config.clone();
+        let gphoto_client = gphoto_client.clone();
+        let cop = lib::copier::Copier::new(2, move |id: GPhotoItemId| {
+            let pool = pool.clone();
+            let api_config = api_config.clone();
+            let gphoto_client = gphoto_client.clone();
+            async move { download_and_upload(&pool, &api_config, &gphoto_client, &id).await }
+        });
+        cop
+    };
+
     if let Some(gphoto_album_id) = args.gphoto_album_id {
         let gphoto_album_id = GPhotoAlbumId(gphoto_album_id);
         let album_metadata = gphoto_client
@@ -634,14 +680,7 @@ async fn main() -> Result<()> {
             &album_title,
         )
         .await?;
-        copy_all_to_album(
-            &pool,
-            &api_config,
-            &gphoto_client,
-            &immich_album_id,
-            &gphoto_items,
-        )
-        .await?;
+        copy_all_to_album(&api_config, cop, &immich_album_id, &gphoto_items).await?;
     }
     if let Some(gphoto_item_id) = args.gphoto_item_id {
         let gphoto_item_id = GPhotoItemId(gphoto_item_id);
