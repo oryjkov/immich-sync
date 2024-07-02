@@ -3,6 +3,7 @@ use anyhow::{anyhow, Context};
 use async_stream::try_stream;
 use bytes::Bytes;
 use futures_core::stream::Stream;
+use log::{debug, error, info};
 use oauth2::basic::BasicClient;
 use oauth2::{
     ClientId, ClientSecret, RefreshToken, StandardTokenResponse, TokenResponse, TokenUrl,
@@ -43,7 +44,7 @@ impl AuthToken {
             return Ok(());
         }
 
-        println!("refreshing auth token");
+        info!("refreshing auth token");
         let js = fs::read_to_string("client-secret.json")?;
         let secret_js = serde_json::from_str::<InstalledJs>(&js)?.installed;
 
@@ -65,7 +66,7 @@ impl AuthToken {
             .request_async(&http_client)
             .await
             .with_context(|| format!("refresh token failed"))?;
-        println!("refresh response: {:?}", refresh_r);
+        debug!("refresh response: {:?}", refresh_r);
         self.token = refresh_r.access_token().secret().clone();
         self.expires_at = time::Instant::now()
             + refresh_r
@@ -127,7 +128,7 @@ impl GPClient {
                     page_size: Some(100),
                     page_token: token,
                 };
-                println!("requesting new page");
+                debug!("requesting new page");
                 let r = gphotos_api::apis::default_api::search_media_items(&config, Some(search_req)).await?;
                 match r.media_items {
                     Some(media_items) => {

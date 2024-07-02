@@ -40,6 +40,9 @@ struct Args {
 
     #[arg(long, default_value = None)]
     gphoto_item_id: Option<String>,
+
+    #[arg(long, default_value = None)]
+    all: bool,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -593,6 +596,64 @@ async fn create_linked_album(
     Ok(immich_album_id)
 }
 
+async fn do_one_album(
+    pool: &Pool<Sqlite>,
+    api_config: &Configuration,
+    gphoto_client: &GPClient,
+    cop: CoalescingWorker<GPhotoItemId, ImmichItemId>,
+    gphoto_album_id: &GPhotoAlbumId,
+) -> Result<()> {
+    let album_metadata = gphoto_client
+        .get_album(&gphoto_album_id)
+        .await
+        .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
+
+    let album_title: String = album_metadata.title.unwrap_or("<No title>".to_string());
+    let immich_album_id = if let Some(immich_album_id) =
+        sqlx::query(r#"SELECT immich_id FROM album_album_links WHERE gphoto_id = $1"#)
+            .bind(&gphoto_album_id.0)
+            .fetch_optional(pool)
+            .await?
+            .map(|row| ImmichAlbumId(row.get("immich_id")))
+    {
+        info!(
+                    "album {album_title:?} ({gphoto_album_id}) exists in immich and we already know it has immich id {immich_album_id}"
+                );
+        immich_album_id
+    } else {
+        let album_map = link_albums(
+            api_config,
+            vec![(album_title.as_str(), gphoto_album_id)].into_iter(),
+        )
+        .await?;
+        if let Some(immich_album_id) = album_map.get(&gphoto_album_id) {
+            info!(
+                    "album {album_title:?} ({gphoto_album_id}) found in immich and has id {immich_album_id}"
+                );
+            // Preserve the mapping in the local db (TODO: should do nothing if the mapping exists).
+            save_album_links(pool, album_map.iter()).await?;
+            immich_album_id.clone()
+        } else {
+            // Create the new album in immich
+            info!(
+                "album {album_title:?} ({gphoto_album_id}) does not exist in immich, creating it"
+            );
+            create_linked_album(pool, api_config, &gphoto_album_id, &album_title).await?
+        }
+    };
+    // Get the list of all media items in the gphoto album.
+    let gphoto_items = link_album_items(
+        pool,
+        api_config,
+        gphoto_client,
+        &gphoto_album_id,
+        &album_title,
+    )
+    .await?;
+    copy_all_to_album(&api_config, cop, &immich_album_id, &gphoto_items).await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
@@ -632,57 +693,49 @@ async fn main() -> Result<()> {
     };
 
     if let Some(gphoto_album_id) = args.gphoto_album_id {
-        let gphoto_album_id = GPhotoAlbumId(gphoto_album_id);
-        let album_metadata = gphoto_client
-            .get_album(&gphoto_album_id)
-            .await
-            .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
-
-        let album_title: String = album_metadata.title.unwrap_or("<No title>".to_string());
-        let immich_album_id = if let Some(immich_album_id) =
-            sqlx::query(r#"SELECT immich_id FROM album_album_links WHERE gphoto_id = $1"#)
-                .bind(&gphoto_album_id.0)
-                .fetch_optional(&pool)
-                .await?
-                .map(|row| ImmichAlbumId(row.get("immich_id")))
-        {
-            info!(
-                    "album {album_title:?} ({gphoto_album_id}) exists in immich and we already know it has immich id {immich_album_id}"
-                );
-            immich_album_id
-        } else {
-            let album_map = link_albums(
-                &api_config,
-                vec![(album_title.as_str(), &gphoto_album_id)].into_iter(),
-            )
-            .await?;
-            if let Some(immich_album_id) = album_map.get(&gphoto_album_id) {
-                info!(
-                    "album {album_title:?} ({gphoto_album_id}) found in immich and has id {immich_album_id}"
-                );
-                // Preserve the mapping in the local db (TODO: should do nothing if the mapping exists).
-                save_album_links(&pool, album_map.iter()).await?;
-                immich_album_id.clone()
-            } else {
-                // Create the new album in immich
-                info!("album {album_title:?} ({gphoto_album_id}) does not exist in immich, creating it");
-                create_linked_album(&pool, &api_config, &gphoto_album_id, &album_title).await?
-            }
-        };
-        // Get the list of all media items in the gphoto album.
-        let gphoto_items = link_album_items(
+        do_one_album(
             &pool,
             &api_config,
             &gphoto_client,
-            &gphoto_album_id,
-            &album_title,
+            cop.clone(),
+            &GPhotoAlbumId(gphoto_album_id),
         )
-        .await?;
-        copy_all_to_album(&api_config, cop, &immich_album_id, &gphoto_items).await?;
+        .await?
     }
     if let Some(gphoto_item_id) = args.gphoto_item_id {
         let gphoto_item_id = GPhotoItemId(gphoto_item_id);
         download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
+    }
+    if args.all {
+        let shared_albums_stream = gphoto_client.shared_albums_stream().map(|album_or| {
+            let pool = pool.clone();
+            let api_config = api_config.clone();
+            let gphoto_client = gphoto_client.clone();
+            let cop = cop.clone();
+            async move {
+                let album = album_or?;
+                info!("copying album {:?}", album.title);
+                do_one_album(
+                    &pool,
+                    &api_config,
+                    &gphoto_client,
+                    cop,
+                    &GPhotoAlbumId(album.id.unwrap()),
+                )
+                .await
+            }
+        });
+        let shared_albums_results = shared_albums_stream
+            .buffer_unordered(10)
+            .collect::<Vec<_>>()
+            .await;
+        println!(
+            "shared albums: {:?}",
+            shared_albums_results
+                .into_iter()
+                .filter(|x| x.is_err())
+                .collect::<Vec<_>>()
+        );
     }
     Ok(())
 }
