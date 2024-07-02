@@ -30,7 +30,7 @@ immich.
 
 ### Notes
 
-Album sync
+#### Album sync
 
 1. Start with a google photo album
 1. link it with an immich album
@@ -45,3 +45,14 @@ Album sync
 Q: Should we store mapping for items that we did not create in immich in the local DB?
 
 Q: We could use album associations as an additional signal when linking media items.
+
+#### Photo location
+
+GPhoto API does not include photo location in EXIFs. Even for your own photos, or if the location
+sharing is enabled on the photo/album.
+[google issue](https://issuetracker.google.com/issues/80379228).
+
+Takeout dump includes photo locations, so it is necessary to import the google takeout to have
+location data on your photos.
+
+As for shared photos - I don't know of an easy solution :(
