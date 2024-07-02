@@ -13,7 +13,7 @@ use immich_api::apis::configuration;
 use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
 use immich_api::models;
-use lib::copier::Copier;
+use lib::coalescing_worker::CoalescingWorker;
 use lib::gpclient::GPClient;
 use lib::types::*;
 use log::{debug, error, info};
@@ -419,7 +419,7 @@ async fn save_album_links(
 // TODO: which items to copy? NotFound only?
 async fn copy_all_to_album(
     api_config: &Configuration,
-    c: Copier<GPhotoItemId, ImmichItemId>,
+    c: CoalescingWorker<GPhotoItemId, ImmichItemId>,
     immich_album_id: &ImmichAlbumId,
     linked_items: &[LinkedItem],
 ) -> Result<()> {
@@ -439,7 +439,7 @@ async fn copy_all_to_album(
         }
     }
     let z = stream::iter(work)
-        .map(|id| c.copy_item_to_immich(id))
+        .map(|id| c.do_work(id))
         .buffer_unordered(100)
         .collect::<Vec<_>>()
         .await;
@@ -624,7 +624,7 @@ async fn main() -> Result<()> {
         let pool = pool.clone();
         let api_config = api_config.clone();
         let gphoto_client = gphoto_client.clone();
-        let cop = lib::copier::Copier::new(2, move |id: GPhotoItemId| {
+        let cop = CoalescingWorker::new(2, move |id: GPhotoItemId| {
             let pool = pool.clone();
             let api_config = api_config.clone();
             let gphoto_client = gphoto_client.clone();

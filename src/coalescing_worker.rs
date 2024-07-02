@@ -7,23 +7,19 @@ use std::{
 use tokio::sync::oneshot;
 use tokio::{sync::mpsc, task::JoinSet};
 
+// Allows running a number of concurrent operations that take an `A` and produce a `B` making sure
+// that for identical `A`s work is only done once.
 #[derive(Clone)]
-pub struct Copier<A, B> {
+pub struct CoalescingWorker<A, B> {
     sender: mpsc::Sender<(A, oneshot::Sender<Result<B>>)>,
 }
 
-impl<A, B> Copier<A, B>
+impl<A, B> CoalescingWorker<A, B>
 where
-    A: std::fmt::Debug
-        + Clone
-        + std::cmp::Eq
-        + std::hash::Hash
-        + std::marker::Send
-        + std::marker::Sync
-        + 'static,
+    A: Clone + std::cmp::Eq + std::hash::Hash + std::marker::Send + std::marker::Sync + 'static,
     B: std::marker::Send + Clone + 'static,
 {
-    pub fn new<F, Fut>(concurrency: usize, copy_one: F) -> Self
+    pub fn new<F, Fut>(concurrency: usize, work_fn: F) -> Self
     where
         F: Fn(A) -> Fut + std::marker::Send + 'static,
         Fut: Future<Output = Result<B>> + std::marker::Send + 'static,
@@ -34,25 +30,25 @@ where
             let mut set = JoinSet::new();
             let in_flight = Arc::new(Mutex::new(HashMap::new()));
 
-            while let Some((gphoto_item_id, done_sender)) = reciever.recv().await {
+            while let Some((work_item, done_sender)) = reciever.recv().await {
                 let in_flight_clone = in_flight.clone();
                 {
                     let mut in_flight_guard = in_flight.lock().unwrap();
                     let waiters: &mut Vec<oneshot::Sender<Result<B>>> =
-                        in_flight_guard.entry(gphoto_item_id.clone()).or_default();
+                        in_flight_guard.entry(work_item.clone()).or_default();
                     waiters.push(done_sender);
+                    // Only spawn a worker when there is not one for this item.
                     if waiters.len() > 0 {
                         set.spawn({
-                            let immich_id_fut = copy_one(gphoto_item_id.clone());
+                            let fut = work_fn(work_item.clone());
                             async move {
-                                println!("gonna copy {:?}", gphoto_item_id);
-                                let immich_id = immich_id_fut.await;
+                                let output = fut.await;
 
                                 let to_notify = {
                                     let mut in_flight = in_flight_clone.lock().unwrap();
-                                    in_flight.remove(&gphoto_item_id).unwrap_or_default()
+                                    in_flight.remove(&work_item).unwrap_or_default()
                                 };
-                                match immich_id {
+                                match output {
                                     Ok(id) => {
                                         for done_sender in to_notify {
                                             let _ = done_sender.send(Ok(id.clone()));
@@ -71,18 +67,13 @@ where
                 if set.len() >= concurrency {
                     set.join_next().await;
                 }
-                println!("queued up");
             }
         });
-        Copier {
-            // in_flight: in_flight_clone,
-            sender,
-            // server,
-        }
+        CoalescingWorker { sender }
     }
-    pub async fn copy_item_to_immich(&self, gphoto_item_id: A) -> Result<B> {
+    pub async fn do_work(&self, work_item: A) -> Result<B> {
         let (sender, receiver) = oneshot::channel();
-        self.sender.send((gphoto_item_id.clone(), sender)).await?;
+        self.sender.send((work_item, sender)).await?;
 
         receiver.await.with_context(|| format!("recv dropped"))?
     }
@@ -100,7 +91,7 @@ mod tests {
         let d = Arc::new(Mutex::new(0));
         let concurrency = 3;
 
-        let c = Copier::new(concurrency, move |id: GPhotoItemId| {
+        let c = CoalescingWorker::new(concurrency, move |id: GPhotoItemId| {
             let d = d.clone();
             let id = id.clone();
             async move {
@@ -125,7 +116,7 @@ mod tests {
         let z = stream::iter(vec![1, 2, 3, 4, 5, 6])
             .map(|n| {
                 let c = c.clone();
-                async move { c.copy_item_to_immich(GPhotoItemId(format!("{}", n))).await }
+                async move { c.do_work(GPhotoItemId(format!("{}", n))).await }
             })
             .buffer_unordered(100)
             .collect::<Vec<_>>()
@@ -142,7 +133,7 @@ mod tests {
         let d = Arc::new(Mutex::new(0));
         let concurrency = 3;
 
-        let c = Copier::new(concurrency, move |id: GPhotoItemId| {
+        let c = CoalescingWorker::new(concurrency, move |id: GPhotoItemId| {
             let d = d.clone();
             let id = id.clone();
             async move {
@@ -167,7 +158,7 @@ mod tests {
         let z = stream::iter(vec![1, 1, 1, 6])
             .map(|n| {
                 let c = c.clone();
-                async move { c.copy_item_to_immich(GPhotoItemId(format!("{}", n))).await }
+                async move { c.do_work(GPhotoItemId(format!("{}", n))).await }
             })
             .buffer_unordered(100)
             .collect::<Vec<_>>()
