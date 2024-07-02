@@ -46,3 +46,5 @@ bytes = "1.6.0"
 log = "0.4.22"
 env_logger = "0.11.3"
 derive_more = { version = "0.99.18", default-features = false ,features = ["display"] }
+indicatif-log-bridge = "0.2.2"
+indicatif = "0.17.8"

@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -13,6 +14,7 @@ use immich_api::apis::configuration;
 use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
 use immich_api::models;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use lib::coalescing_worker::CoalescingWorker;
 use lib::gpclient::GPClient;
 use lib::types::*;
@@ -42,7 +44,7 @@ struct Args {
     gphoto_item_id: Option<String>,
 
     #[arg(long, default_value = None)]
-    all: bool,
+    all_shared: bool,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -425,6 +427,7 @@ async fn copy_all_to_album(
     c: CoalescingWorker<GPhotoItemId, ImmichItemId>,
     immich_album_id: &ImmichAlbumId,
     linked_items: &[LinkedItem],
+    pb: ProgressBar,
 ) -> Result<()> {
     let mut work = vec![];
     for linked_item in linked_items {
@@ -439,8 +442,17 @@ async fn copy_all_to_album(
             }
         }
     }
+    pb.inc((linked_items.len() - work.len()) as u64);
     let z = stream::iter(work)
-        .map(|id| c.do_work(id))
+        .map(|id| {
+            let pb = pb.clone();
+            let c = c.clone();
+            async move {
+                let res = c.do_work(id).await;
+                pb.inc(1);
+                res
+            }
+        })
         .buffer_unordered(100) // 100 is just a large number
         .collect::<Vec<_>>()
         .await;
@@ -601,14 +613,27 @@ async fn do_one_album(
     api_config: &Configuration,
     gphoto_client: &GPClient,
     cop: CoalescingWorker<GPhotoItemId, ImmichItemId>,
-    gphoto_album_id: &GPhotoAlbumId,
+    album_metadata: gphotos_api::models::Album,
+    multi: MultiProgress,
 ) -> Result<()> {
-    let album_metadata = gphoto_client
-        .get_album(&gphoto_album_id)
-        .await
-        .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
+    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.ok_or(anyhow!("missing id"))?);
+    let pb = multi.add(ProgressBar::new(
+        album_metadata
+            .media_items_count
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or_default(),
+    ));
+    let sty = ProgressStyle::with_template(
+        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+    )
+    .unwrap()
+    .progress_chars("##-");
+    pb.set_style(sty);
 
     let album_title: String = album_metadata.title.unwrap_or("<No title>".to_string());
+    pb.set_message(format!("{:?}: finding immich album", album_title));
+
     let immich_album_id = if let Some(immich_album_id) =
         sqlx::query(r#"SELECT immich_id FROM album_album_links WHERE gphoto_id = $1"#)
             .bind(&gphoto_album_id.0)
@@ -623,7 +648,7 @@ async fn do_one_album(
     } else {
         let album_map = link_albums(
             api_config,
-            vec![(album_title.as_str(), gphoto_album_id)].into_iter(),
+            vec![(album_title.as_str(), &gphoto_album_id)].into_iter(),
         )
         .await?;
         if let Some(immich_album_id) = album_map.get(&gphoto_album_id) {
@@ -641,6 +666,7 @@ async fn do_one_album(
             create_linked_album(pool, api_config, &gphoto_album_id, &album_title).await?
         }
     };
+    pb.set_message(format!("{:?}: linking album items", album_title));
     // Get the list of all media items in the gphoto album.
     let gphoto_items = link_album_items(
         pool,
@@ -650,13 +676,20 @@ async fn do_one_album(
         &album_title,
     )
     .await?;
-    copy_all_to_album(&api_config, cop, &immich_album_id, &gphoto_items).await?;
+    pb.set_message(format!("{:?}: copying album items", album_title));
+    copy_all_to_album(&api_config, cop, &immich_album_id, &gphoto_items, pb).await?;
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    let logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+    let multi = MultiProgress::new();
+    indicatif_log_bridge::LogWrapper::new(multi.clone(), logger)
+        .try_init()
+        .unwrap();
+
     dotenv().expect(".env file not found");
     let args = Args::parse();
     let pool = SqlitePoolOptions::new()
@@ -693,12 +726,18 @@ async fn main() -> Result<()> {
     };
 
     if let Some(gphoto_album_id) = args.gphoto_album_id {
+        let gphoto_album_id = GPhotoAlbumId(gphoto_album_id);
+        let album_metadata = gphoto_client
+            .get_album(&gphoto_album_id)
+            .await
+            .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
         do_one_album(
             &pool,
             &api_config,
             &gphoto_client,
             cop.clone(),
-            &GPhotoAlbumId(gphoto_album_id),
+            album_metadata,
+            multi.clone(),
         )
         .await?
     }
@@ -706,27 +745,21 @@ async fn main() -> Result<()> {
         let gphoto_item_id = GPhotoItemId(gphoto_item_id);
         download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
     }
-    if args.all {
+    if args.all_shared {
         let shared_albums_stream = gphoto_client.shared_albums_stream().map(|album_or| {
             let pool = pool.clone();
             let api_config = api_config.clone();
             let gphoto_client = gphoto_client.clone();
             let cop = cop.clone();
+            let multi = multi.clone();
             async move {
                 let album = album_or?;
                 info!("copying album {:?}", album.title);
-                do_one_album(
-                    &pool,
-                    &api_config,
-                    &gphoto_client,
-                    cop,
-                    &GPhotoAlbumId(album.id.unwrap()),
-                )
-                .await
+                do_one_album(&pool, &api_config, &gphoto_client, cop, album, multi).await
             }
         });
         let shared_albums_results = shared_albums_stream
-            .buffer_unordered(10)
+            .buffer_unordered(2)
             .collect::<Vec<_>>()
             .await;
         println!(
