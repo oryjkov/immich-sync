@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use colored::Colorize;
@@ -6,7 +6,6 @@ use crypto::digest::Digest;
 use crypto::sha1::Sha1;
 use dotenvy::dotenv;
 use futures::StreamExt;
-use gphotos_api::models::media_item;
 use immich_api::apis::albums_api;
 use immich_api::apis::assets_api;
 use immich_api::apis::configuration;
@@ -14,15 +13,14 @@ use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
 use immich_api::models;
 use lib::gpclient::GPClient;
-use log::{debug, error, info, warn};
+use lib::types::*;
+use log::{debug, error, info};
 use serde::Deserialize;
-use serde::Serialize;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use std::env;
 use std::mem::swap;
-use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_normalization::UnicodeNormalization;
 
@@ -159,12 +157,12 @@ impl From<models::AssetResponseDto> for ImageData {
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 enum LookupResult {
-    NotFound,                // Filename is not found in immich
+    NotFound,                      // Filename is not found in immich
     FoundMultiple, // Filename found multiple matches but none of the candidates had a matching metadata
-    FoundUnique(String), // Filename found a single match but no matching metadata
+    FoundUnique(ImmichItemId), // Filename found a single match but no matching metadata
     MatchedMultiple, // Metadata matched with multiple candidates
-    MatchedUnique(String), // Metadata matched with exactly one candidate
-    MatchedUniqueDB(String), // Matched an item from the local db.
+    MatchedUnique(ImmichItemId), // Metadata matched with exactly one candidate
+    MatchedUniqueDB(ImmichItemId), // Matched an item from the local db.
 }
 
 // Links a media item from google photos to a immich item. Linking is done by:
@@ -173,16 +171,18 @@ enum LookupResult {
 async fn link_item(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
-    gphoto_id: &str,
+    gphoto_id: &GPhotoItemId,
     filename: &str,
     metadata: &str,
 ) -> Result<LookupResult> {
     let local_match = sqlx::query(r#"SELECT immich_id FROM item_item_links WHERE gphoto_id = $1"#)
-        .bind(gphoto_id)
+        .bind(&gphoto_id.0)
         .fetch_optional(pool)
         .await?;
     if let Some(immich_id) = local_match {
-        return Ok(LookupResult::MatchedUniqueDB(immich_id.get("immich_id")));
+        return Ok(LookupResult::MatchedUniqueDB(ImmichItemId(
+            immich_id.get("immich_id"),
+        )));
     }
 
     let gphoto_metadata: ImageData = serde_json::from_str(metadata)
@@ -196,7 +196,7 @@ async fn link_item(
     let mut rv = LookupResult::NotFound;
     let res = search_api::search_metadata(api_config, search_req).await?;
     if res.assets.items.len() == 1 {
-        rv = LookupResult::FoundUnique(res.assets.items[0].id.clone());
+        rv = LookupResult::FoundUnique(ImmichItemId(res.assets.items[0].id.clone()));
     } else if res.assets.items.len() > 1 {
         rv = LookupResult::FoundMultiple;
     }
@@ -206,7 +206,7 @@ async fn link_item(
         if match_metadata(&gphoto_metadata, &immich_metadata) {
             rv = match rv {
                 LookupResult::MatchedUnique(_) => LookupResult::MatchedMultiple,
-                _ => LookupResult::MatchedUnique(immich_item.id.clone()),
+                _ => LookupResult::MatchedUnique(ImmichItemId(immich_item.id.clone())),
             };
         } else {
             debug!("{}: No metadata match!", filename.yellow());
@@ -221,7 +221,7 @@ async fn link_item(
 
 #[derive(Debug)]
 struct LinkedItem {
-    gphoto_id: String,
+    gphoto_id: GPhotoItemId,
     link_type: LookupResult,
 }
 // Tries to link all media items in gphoto album `gphoto_album_id` to immich media items.
@@ -231,7 +231,7 @@ async fn link_album_items(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     gphoto_client: &GPClient,
-    gphoto_album_id: &str,
+    gphoto_album_id: &GPhotoAlbumId,
     album_name: &str,
 ) -> Result<Vec<LinkedItem>> {
     let gphoto_items = gphoto_client
@@ -255,20 +255,24 @@ async fn link_album_items(
     let mut ress: HashMap<_, usize> = HashMap::new();
     let mut link_results = vec![];
     for gphoto_item in gphoto_items {
-        let gphoto_id = gphoto_item.id.unwrap();
+        let gphoto_id = GPhotoItemId(gphoto_item.id.unwrap());
         let filename = gphoto_item.filename.unwrap();
         // TODO: get rid of this string intermediate conversion.
         let metadata = gphoto_item.media_metadata.unwrap();
         let metadata = serde_json::to_string(&metadata).unwrap();
         let res = link_item(pool, api_config, &gphoto_id, &filename, &metadata).await?;
         let anon_res = match res {
-            LookupResult::FoundUnique(_) => LookupResult::FoundUnique("_".to_string()),
-            LookupResult::MatchedUnique(_) => LookupResult::MatchedUnique("_".to_string()),
+            LookupResult::FoundUnique(_) => {
+                LookupResult::FoundUnique(ImmichItemId("_".to_string()))
+            }
+            LookupResult::MatchedUnique(_) => {
+                LookupResult::MatchedUnique(ImmichItemId("_".to_string()))
+            }
             _ => res.clone(),
         };
         *ress.entry(anon_res).or_default() += 1;
         link_results.push(LinkedItem {
-            gphoto_id: gphoto_id.to_string(),
+            gphoto_id,
             link_type: res,
         });
     }
@@ -317,17 +321,17 @@ fn match_metadata(gphoto_metadata: &ImageData, immich_metadata: &ImageData) -> b
 // TODO: this picks a random albumm id for albums that have the same title. Detect it at least
 async fn link_albums(
     api_config: &Configuration,
-    gphoto_albums: impl Iterator<Item = (&str, &str)>, // List of (gphoto_album_ids, title)
-) -> Result<HashMap<String, String>> {
+    gphoto_albums: impl Iterator<Item = (&str, &GPhotoAlbumId)>, // List of (title, gphoto_album_ids)
+) -> Result<HashMap<GPhotoAlbumId, ImmichAlbumId>> {
     let res = albums_api::get_all_albums(&api_config, None, None).await?;
     let immich_albums = res
         .into_iter()
-        .map(|album| (album.album_name, album.id))
+        .map(|album| (album.album_name, ImmichAlbumId(album.id)))
         .collect::<Vec<_>>();
 
     // Maps various version of the (immich) album title to immich album id. The title "as-is" takes
     // precedence. We then lookup gphoto album title (variants) in that map.
-    let mut m: HashMap<String, String> = HashMap::new();
+    let mut m: HashMap<String, ImmichAlbumId> = HashMap::new();
 
     // Remove spaces - some albums have a trailing space.
     for (name, id) in &immich_albums {
@@ -365,7 +369,7 @@ async fn link_albums(
             .or_else(|| m.get(&name_nfc))
         {
             Some(immich_id) => {
-                links.insert(gphoto_album_id.to_string(), immich_id.to_string());
+                links.insert(gphoto_album_id.clone(), immich_id.clone());
             }
             None => {
                 print!("{:?}: ", name);
@@ -383,7 +387,7 @@ async fn link_albums(
 // Saves the given albums links in the local DB.
 async fn save_album_links(
     pool: &Pool<Sqlite>,
-    links: impl Iterator<Item = (&String, &String)>,
+    links: impl Iterator<Item = (&GPhotoAlbumId, &ImmichAlbumId)>,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
     let mut cnt = 0;
@@ -394,8 +398,8 @@ async fn save_album_links(
                     ($1, $2)
             "#,
         )
-        .bind(gphoto_id)
-        .bind(immich_id)
+        .bind(&gphoto_id.0)
+        .bind(&immich_id.0)
         .execute(&mut *tx)
         .await?;
         cnt += 1;
@@ -415,7 +419,7 @@ async fn copy_all_to_album(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     gphoto_client: &GPClient,
-    immich_album_id: &str,
+    immich_album_id: &ImmichAlbumId,
     linked_items: &[LinkedItem],
 ) -> Result<()> {
     let mut result = vec![];
@@ -432,13 +436,13 @@ async fn copy_all_to_album(
                 continue;
             }
         };
-        result.push(uuid::Uuid::parse_str(&immich_id)?);
+        result.push(uuid::Uuid::parse_str(&immich_id.0)?);
     }
     info!("uploaded {} items", result.len());
     if result.len() > 0 {
         let res = albums_api::add_assets_to_album(
             api_config,
-            immich_album_id,
+            &immich_album_id.0,
             models::BulkIdsDto { ids: result },
             None,
         )
@@ -456,8 +460,8 @@ async fn download_and_upload(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     gphoto_client: &GPClient,
-    gphoto_item_id: &str,
-) -> Result<String> {
+    gphoto_item_id: &GPhotoItemId,
+) -> Result<ImmichItemId> {
     // Download gphoto id
     let (gphoto_item, bytes) = gphoto_client
         .fetch_media_item(gphoto_item_id)
@@ -503,13 +507,13 @@ async fn download_and_upload(
     .with_context(|| format!("upload_asset to immich failed"))?;
     info!("upload result: {:?}", res);
     sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id) VALUES ($1, $2)"#)
-        .bind(gphoto_item_id)
+        .bind(&gphoto_item_id.0)
         .bind(&res.id)
         .execute(pool)
         .await
         .with_context(|| format!("failed to save item_item link to the db"))?;
 
-    Ok(res.id)
+    Ok(ImmichItemId(res.id))
 }
 
 // Creates an immich album named `title` that is then linked (in the local database) to
@@ -517,9 +521,9 @@ async fn download_and_upload(
 async fn create_linked_album(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
-    gphoto_id: &str,
+    gphoto_id: &GPhotoAlbumId,
     title: &str,
-) -> Result<String> {
+) -> Result<ImmichAlbumId> {
     let req = models::CreateAlbumDto {
         album_name: title.to_string(),
         asset_ids: Some(vec![]),
@@ -529,10 +533,11 @@ async fn create_linked_album(
     let res = albums_api::create_album(api_config, req)
         .await
         .with_context(|| format!("failed to create an immich album with title {title:?}"))?;
+    let immich_album_id = ImmichAlbumId(res.id);
 
     let mut tx = pool.begin().await?;
     sqlx::query(r#"INSERT INTO created_albums (immich_id, creation_time) VALUES ($1, $2)"#)
-        .bind(&res.id)
+        .bind(&immich_album_id.0)
         .bind(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -547,18 +552,18 @@ async fn create_linked_album(
                     ($1, $2)
             "#,
     )
-    .bind(gphoto_id)
-    .bind(&res.id)
+    .bind(&gphoto_id.0)
+    .bind(&immich_album_id.0)
     .execute(&mut *tx)
     .await?;
     tx.commit().await.with_context(|| {
         format!(
             "failed to write immich album data in the db for album {title:?} immich id: {}, gphoto id: {gphoto_id}",
-            res.id
+            immich_album_id
         )
     })?;
 
-    Ok(res.id)
+    Ok(immich_album_id)
 }
 
 #[tokio::main]
@@ -583,18 +588,19 @@ async fn main() -> Result<()> {
     let gphoto_client = GPClient::new_from_file("auth_token.json").await?;
 
     if let Some(gphoto_album_id) = args.gphoto_album_id {
+        let gphoto_album_id = GPhotoAlbumId(gphoto_album_id);
         let album_metadata = gphoto_client
             .get_album(&gphoto_album_id)
             .await
             .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
 
         let album_title: String = album_metadata.title.unwrap_or("<No title>".to_string());
-        let immich_album_id: String = if let Some(immich_album_id) =
+        let immich_album_id = if let Some(immich_album_id) =
             sqlx::query(r#"SELECT immich_id FROM album_album_links WHERE gphoto_id = $1"#)
-                .bind(&gphoto_album_id)
+                .bind(&gphoto_album_id.0)
                 .fetch_optional(&pool)
                 .await?
-                .map(|row| row.get("immich_id"))
+                .map(|row| ImmichAlbumId(row.get("immich_id")))
         {
             info!(
                     "album {album_title:?} ({gphoto_album_id}) exists in immich and we already know it has immich id {immich_album_id}"
@@ -603,7 +609,7 @@ async fn main() -> Result<()> {
         } else {
             let album_map = link_albums(
                 &api_config,
-                vec![(album_title.as_str(), gphoto_album_id.as_str())].into_iter(),
+                vec![(album_title.as_str(), &gphoto_album_id)].into_iter(),
             )
             .await?;
             if let Some(immich_album_id) = album_map.get(&gphoto_album_id) {
@@ -638,8 +644,8 @@ async fn main() -> Result<()> {
         .await?;
     }
     if let Some(gphoto_item_id) = args.gphoto_item_id {
+        let gphoto_item_id = GPhotoItemId(gphoto_item_id);
         download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
     }
-    // link_albums(&pool, &api_config).await?;
     Ok(())
 }

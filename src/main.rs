@@ -4,6 +4,7 @@ use crypto::digest::Digest;
 use crypto::sha1::Sha1;
 use futures::StreamExt;
 use lib::gpclient::*;
+use lib::types::*;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::fs;
@@ -218,14 +219,14 @@ async fn main() -> anyhow::Result<()> {
             let gpclient = gpclient.clone();
             let pool = pool.clone();
             async move {
-                let album_id = row.try_get("id").unwrap();
+                let album_id = GPhotoAlbumId(row.get("id"));
                 println!(
                     "fetching items for album '{}', expecting {} items",
                     row.try_get("title").unwrap_or("----".to_string()),
                     row.try_get("media_items_count").unwrap_or(-1)
                 );
                 let album_items = gpclient
-                    .album_items_stream(album_id)
+                    .album_items_stream(&album_id)
                     .map(|media_item_or| {
                         let pool = pool.clone();
                         async move {

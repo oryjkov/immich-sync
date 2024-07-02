@@ -1,3 +1,4 @@
+use crate::types::*;
 use anyhow::{anyhow, Context};
 use async_stream::try_stream;
 use bytes::Bytes;
@@ -114,9 +115,9 @@ impl GPClient {
     }
     pub fn album_items_stream(
         &self,
-        album_id: &str,
+        album_id: &GPhotoAlbumId,
     ) -> impl Stream<Item = anyhow::Result<gphotos_api::models::MediaItem>> + '_ {
-        let album_id = album_id.to_string().clone();
+        let album_id = album_id.0.clone();
         try_stream! {
             let mut token: Option<String> = None;
             loop {
@@ -217,10 +218,10 @@ impl GPClient {
     }
     pub async fn fetch_media_item(
         &self,
-        gphoto_id: &str,
+        gphoto_id: &GPhotoItemId,
     ) -> anyhow::Result<(gphotos_api::models::MediaItem, Bytes)> {
         let config = self.get_config().await?;
-        let media_item = gphotos_api::apis::default_api::get_media_item(&config, gphoto_id)
+        let media_item = gphotos_api::apis::default_api::get_media_item(&config, &gphoto_id.0)
             .await
             .with_context(|| format!("failed to get media item id {}", gphoto_id))?;
         let metadata = media_item
@@ -251,9 +252,12 @@ impl GPClient {
         Ok((media_item, bytes))
     }
 
-    pub async fn get_album(&self, album_id: &str) -> anyhow::Result<gphotos_api::models::Album> {
+    pub async fn get_album(
+        &self,
+        album_id: &GPhotoAlbumId,
+    ) -> anyhow::Result<gphotos_api::models::Album> {
         let config = self.get_config().await?;
-        gphotos_api::apis::default_api::get_album(&config, album_id)
+        gphotos_api::apis::default_api::get_album(&config, &album_id.0)
             .await
             .with_context(|| format!("failed to get album id {}", album_id))
     }
