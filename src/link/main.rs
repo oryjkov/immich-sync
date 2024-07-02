@@ -45,6 +45,12 @@ struct Args {
 
     #[arg(long, default_value = None)]
     all_shared: bool,
+
+    #[arg(long, default_value = None)]
+    client_secret: String,
+
+    #[arg(long, default_value_t = 10)]
+    download_concurrency: usize,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -706,13 +712,13 @@ async fn main() -> Result<()> {
         base_path: args.immich_url,
         ..Default::default()
     };
-    let gphoto_client = GPClient::new_from_file("auth_token.json").await?;
+    let gphoto_client = GPClient::new_from_file("auth_token.json", &args.client_secret).await?;
 
     let cop = {
         let pool = pool.clone();
         let api_config = api_config.clone();
         let gphoto_client = gphoto_client.clone();
-        let cop = CoalescingWorker::new(2, move |id: GPhotoItemId| {
+        let cop = CoalescingWorker::new(args.download_concurrency, move |id: GPhotoItemId| {
             let pool = pool.clone();
             let api_config = api_config.clone();
             let gphoto_client = gphoto_client.clone();

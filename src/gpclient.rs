@@ -29,13 +29,15 @@ pub struct AuthToken {
     pub token: String,
     expires_at: std::time::Instant,
     refresh_token: String,
+    client_secret: String,
 }
 impl AuthToken {
-    pub fn new(refresh_token: &str) -> AuthToken {
+    pub fn new(refresh_token: &str, client_secret: &str) -> AuthToken {
         AuthToken {
             token: "".to_string(),
             expires_at: time::Instant::now(),
             refresh_token: refresh_token.to_string(),
+            client_secret: client_secret.to_string(),
         }
     }
 
@@ -45,7 +47,7 @@ impl AuthToken {
         }
 
         info!("refreshing auth token");
-        let js = fs::read_to_string("client-secret.json")?;
+        let js = fs::read_to_string(&self.client_secret)?;
         let secret_js = serde_json::from_str::<InstalledJs>(&js)?.installed;
 
         let google_client_id = ClientId::new(secret_js.client_id);
@@ -83,7 +85,7 @@ pub struct GPClient {
     api_config: gphotos_api::apis::configuration::Configuration,
 }
 impl GPClient {
-    pub async fn new_from_file(auth_file: &str) -> anyhow::Result<Self> {
+    pub async fn new_from_file(auth_file: &str, client_secret: &str) -> anyhow::Result<Self> {
         // We only need the refresh token.
         let saved_token: StandardTokenResponse<
             oauth2::EmptyExtraTokenFields,
@@ -94,6 +96,7 @@ impl GPClient {
                 .refresh_token()
                 .ok_or(anyhow!("can't find refresh token"))?
                 .secret(),
+            client_secret,
         );
 
         let api_config = gphotos_api::apis::configuration::Configuration {

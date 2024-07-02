@@ -56,3 +56,10 @@ Takeout dump includes photo locations, so it is necessary to import the google t
 location data on your photos.
 
 As for shared photos - I don't know of an easy solution :(
+
+#### API limits
+
+Google photo library limits to 10k API reqests per day and 75k media downloads per day.
+
+Using a different cloud project worked find and it appears that item and album ids are preserved
+accross different projects.

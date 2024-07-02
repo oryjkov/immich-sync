@@ -27,6 +27,7 @@
 //! ...and follow the instructions.
 //!
 
+use clap::Parser;
 use oauth2::basic::BasicClient;
 use oauth2::reqwest;
 use oauth2::{
@@ -52,9 +53,18 @@ struct SecretJs {
     client_secret: String,
 }
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(long, default_value = None)]
+    client_secret: String,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let js = fs::read_to_string("client-secret.json")?;
+    let args = Args::parse();
+
+    let js = fs::read_to_string(args.client_secret)?;
     let secret_js = serde_json::from_str::<InstalledJs>(&js)?.installed;
 
     let google_client_id = ClientId::new(secret_js.client_id);

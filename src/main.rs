@@ -19,6 +19,9 @@ struct Args {
 
     #[arg(long, default_value_t = 10)]
     concurrency: usize,
+
+    #[arg(long, default_value = None)]
+    client_secret: String,
 }
 
 async fn add_album(
@@ -169,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
 
-    let gpclient = GPClient::new_from_file("auth_token.json").await?;
+    let gpclient = GPClient::new_from_file("auth_token.json", &args.client_secret).await?;
 
     let shared_albums_stream = gpclient.shared_albums_stream().map(|album_or| {
         let p = pool.clone();
