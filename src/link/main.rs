@@ -635,12 +635,13 @@ async fn do_one_album(
             .parse()
             .unwrap_or_default(),
     ));
-    let sty = ProgressStyle::with_template(
-        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-    )
-    .unwrap()
-    .progress_chars("##-");
-    pb.set_style(sty);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
 
     let album_title: String = album_metadata.title.unwrap_or("<No title>".to_string());
     pb.set_message(format!("{:?}: finding immich album", album_title));
@@ -768,19 +769,39 @@ async fn main() -> Result<()> {
         // download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
     }
     if args.all_shared {
-        let shared_albums_stream = gphoto_client.shared_albums_stream().map(|album_or| {
-            let pool = pool.clone();
-            let api_config = api_config.clone();
-            let gphoto_client = gphoto_client.clone();
-            let cop = cop.clone();
-            let multi = multi.clone();
-            async move {
-                let album = album_or?;
-                info!("copying album {:?}", album.title);
-                do_one_album(&pool, &api_config, &gphoto_client, cop, album, multi).await
-            }
-        });
-        let shared_albums_results = shared_albums_stream
+        let all_albums_pb = multi.add(ProgressBar::new(1));
+        all_albums_pb.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+            )
+            .unwrap()
+            .progress_chars("##-"),
+        );
+        all_albums_pb.set_message("Listing shared albums");
+
+        let shared_albums_stream = gphoto_client.shared_albums_stream();
+        let shared_albums_stream = shared_albums_stream
+            .map(|album_or| {
+                let pb = all_albums_pb.clone();
+                pb.set_length(pb.length().unwrap() + 1);
+                let pool = pool.clone();
+                let api_config = api_config.clone();
+                let gphoto_client = gphoto_client.clone();
+                let cop = cop.clone();
+                let multi = multi.clone();
+                async move {
+                    let album = album_or?;
+                    info!("copying album {:?}", album.title);
+                    let res =
+                        do_one_album(&pool, &api_config, &gphoto_client, cop, album, multi).await;
+                    pb.inc(1);
+                    res
+                }
+            })
+            .collect::<Vec<_>>()
+            .await;
+        all_albums_pb.set_message("Copying shared albums");
+        let shared_albums_results = stream::iter(shared_albums_stream)
             .buffer_unordered(2)
             .collect::<Vec<_>>()
             .await;
