@@ -3,7 +3,7 @@ use clap::Parser;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
 use futures::StreamExt;
-use lib::*;
+use lib::gpclient::*;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::fs;

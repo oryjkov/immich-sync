@@ -13,6 +13,7 @@ use immich_api::apis::configuration;
 use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
 use immich_api::models;
+use lib::gpclient::GPClient;
 use log::{debug, error, info, warn};
 use serde::Deserialize;
 use serde::Serialize;
@@ -229,7 +230,7 @@ struct LinkedItem {
 async fn link_album_items(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
-    gphoto_client: &lib::GPClient,
+    gphoto_client: &GPClient,
     gphoto_album_id: &str,
     album_name: &str,
 ) -> Result<Vec<LinkedItem>> {
@@ -256,6 +257,7 @@ async fn link_album_items(
     for gphoto_item in gphoto_items {
         let gphoto_id = gphoto_item.id.unwrap();
         let filename = gphoto_item.filename.unwrap();
+        // TODO: get rid of this string intermediate conversion.
         let metadata = gphoto_item.media_metadata.unwrap();
         let metadata = serde_json::to_string(&metadata).unwrap();
         let res = link_item(pool, api_config, &gphoto_id, &filename, &metadata).await?;
@@ -412,7 +414,7 @@ async fn save_album_links(
 async fn copy_all_to_album(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
-    gphoto_client: &lib::GPClient,
+    gphoto_client: &GPClient,
     immich_album_id: &str,
     linked_items: &[LinkedItem],
 ) -> Result<()> {
@@ -453,7 +455,7 @@ async fn copy_all_to_album(
 async fn download_and_upload(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
-    gphoto_client: &lib::GPClient,
+    gphoto_client: &GPClient,
     gphoto_item_id: &str,
 ) -> Result<String> {
     // Download gphoto id
@@ -578,7 +580,7 @@ async fn main() -> Result<()> {
         base_path: args.immich_url,
         ..Default::default()
     };
-    let gphoto_client = lib::GPClient::new_from_file("auth_token.json").await?;
+    let gphoto_client = GPClient::new_from_file("auth_token.json").await?;
 
     if let Some(gphoto_album_id) = args.gphoto_album_id {
         let album_metadata = gphoto_client
