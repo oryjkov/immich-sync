@@ -120,11 +120,13 @@ impl From<models::AssetResponseDto> for ImageData {
             .and_then(|exif| exif.exposure_time.clone().flatten())
             .map(|s| {
                 let p = s.split('/').collect::<Vec<_>>();
-                if p.len() == 0 {
+                if p.len() == 1 {
                     (p[0].parse::<f64>().unwrap() * 1e6).round() as u64
-                } else {
+                } else if p.len() == 2 {
                     ((p[0].parse::<f64>().unwrap() / p[1].parse::<f64>().unwrap()) * 1e6).round()
                         as u64
+                } else {
+                    panic!("strange input for exposure time: {:?}", s);
                 }
             });
         ImageData {
