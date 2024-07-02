@@ -222,12 +222,9 @@ impl GPClient {
     }
     pub async fn fetch_media_item(
         &self,
-        gphoto_id: &GPhotoItemId,
-    ) -> anyhow::Result<(gphotos_api::models::MediaItem, Bytes)> {
+        media_item: &gphotos_api::models::MediaItem,
+    ) -> anyhow::Result<Bytes> {
         let config = self.get_config().await?;
-        let media_item = gphotos_api::apis::default_api::get_media_item(&config, &gphoto_id.0)
-            .await
-            .with_context(|| format!("failed to get media item id {}", gphoto_id))?;
         let metadata = media_item
             .media_metadata
             .as_ref()
@@ -253,7 +250,7 @@ impl GPClient {
             .await?
             .bytes()
             .await?;
-        Ok((media_item, bytes))
+        Ok(bytes)
     }
 
     pub async fn get_album(

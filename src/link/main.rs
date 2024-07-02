@@ -8,6 +8,7 @@ use crypto::sha1::Sha1;
 use dotenvy::dotenv;
 use futures::stream;
 use futures::StreamExt;
+use gphotos_api::models::MediaItem;
 use immich_api::apis::albums_api;
 use immich_api::apis::assets_api;
 use immich_api::apis::configuration;
@@ -24,6 +25,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use std::env;
+use std::hash::Hash;
 use std::mem::swap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_normalization::UnicodeNormalization;
@@ -234,7 +236,8 @@ async fn link_item(
 
 #[derive(Debug)]
 struct LinkedItem {
-    gphoto_id: GPhotoItemId,
+    // gphoto_id: GPhotoItemId,
+    gphoto_item: MediaItem,
     link_type: LookupResult,
 }
 // Tries to link all media items in gphoto album `gphoto_album_id` to immich media items.
@@ -260,18 +263,14 @@ async fn link_album_items(
             }
         })
         .collect::<Vec<_>>();
-    // let gphoto_items = sqlx::query(r#"SELECT id, filename, metadata FROM media_items where id IN (select media_item_id from album_items WHERE album_id = $1)"#)
-    //     .bind(gphoto_album_id)
-    //     .fetch_all(pool)
-    //     .await?;
 
     let mut ress: HashMap<_, usize> = HashMap::new();
     let mut link_results = vec![];
     for gphoto_item in gphoto_items {
-        let gphoto_id = GPhotoItemId(gphoto_item.id.unwrap());
-        let filename = gphoto_item.filename.unwrap();
+        let gphoto_id = GPhotoItemId(gphoto_item.id.as_ref().unwrap().clone());
+        let filename = gphoto_item.filename.as_ref().unwrap();
         // TODO: get rid of this string intermediate conversion.
-        let metadata = gphoto_item.media_metadata.unwrap();
+        let metadata = gphoto_item.media_metadata.as_ref().unwrap();
         let metadata = serde_json::to_string(&metadata).unwrap();
         let res = link_item(pool, api_config, &gphoto_id, &filename, &metadata).await?;
         let anon_res = match res {
@@ -285,7 +284,7 @@ async fn link_album_items(
         };
         *ress.entry(anon_res).or_default() += 1;
         link_results.push(LinkedItem {
-            gphoto_id,
+            gphoto_item,
             link_type: res,
         });
     }
@@ -430,7 +429,7 @@ async fn save_album_links(
 // TODO: which items to copy? NotFound only?
 async fn copy_all_to_album(
     api_config: &Configuration,
-    c: CoalescingWorker<GPhotoItemId, ImmichItemId>,
+    c: CoalescingWorker<WrappedMediaItem, ImmichItemId>,
     immich_album_id: &ImmichAlbumId,
     linked_items: &[LinkedItem],
     pb: ProgressBar,
@@ -440,7 +439,7 @@ async fn copy_all_to_album(
         match &linked_item.link_type {
             LookupResult::NotFound => {
                 info!("Will copy item {:?}", linked_item);
-                work.push(linked_item.gphoto_id.clone());
+                work.push(linked_item.gphoto_item.clone());
             }
             _ => {
                 debug!("Assuming item already exists in gphotos, skipping it");
@@ -450,11 +449,11 @@ async fn copy_all_to_album(
     }
     pb.inc((linked_items.len() - work.len()) as u64);
     let z = stream::iter(work)
-        .map(|id| {
+        .map(|gphoto_item| {
             let pb = pb.clone();
             let c = c.clone();
             async move {
-                let res = c.do_work(id).await;
+                let res = c.do_work(WrappedMediaItem(gphoto_item)).await;
                 pb.inc(1);
                 res
             }
@@ -508,13 +507,18 @@ async fn download_and_upload(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     gphoto_client: &GPClient,
-    gphoto_item_id: &GPhotoItemId,
+    gphoto_item: &MediaItem,
 ) -> Result<ImmichItemId> {
     // Download gphoto id
-    let (gphoto_item, bytes) = gphoto_client
-        .fetch_media_item(gphoto_item_id)
+    let bytes = gphoto_client
+        .fetch_media_item(gphoto_item)
         .await
-        .with_context(|| format!("failed to fetch gphoto item id {}", gphoto_item_id))?;
+        .with_context(|| {
+            format!(
+                "failed to fetch gphoto item id {}",
+                gphoto_item.id.as_ref().unwrap()
+            )
+        })?;
 
     let creation_time = gphoto_item
         .media_metadata
@@ -527,6 +531,7 @@ async fn download_and_upload(
     let asset_data = reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(
         gphoto_item
             .filename
+            .clone()
             .unwrap_or(format!("no name on gphoto.name")),
     );
 
@@ -555,7 +560,7 @@ async fn download_and_upload(
     .with_context(|| format!("upload_asset to immich failed"))?;
     debug!("upload result: {:?}", res);
     sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id) VALUES ($1, $2)"#)
-        .bind(&gphoto_item_id.0)
+        .bind(&gphoto_item.id.as_ref().unwrap())
         .bind(&res.id)
         .execute(pool)
         .await
@@ -618,7 +623,7 @@ async fn do_one_album(
     pool: &Pool<Sqlite>,
     api_config: &Configuration,
     gphoto_client: &GPClient,
-    cop: CoalescingWorker<GPhotoItemId, ImmichItemId>,
+    cop: CoalescingWorker<WrappedMediaItem, ImmichItemId>,
     album_metadata: gphotos_api::models::Album,
     multi: MultiProgress,
 ) -> Result<()> {
@@ -687,6 +692,15 @@ async fn do_one_album(
     Ok(())
 }
 
+#[derive(PartialEq, Debug, Clone)]
+struct WrappedMediaItem(MediaItem);
+impl Eq for WrappedMediaItem {}
+impl Hash for WrappedMediaItem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.id.as_ref().unwrap().hash(state)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let logger =
@@ -718,16 +732,17 @@ async fn main() -> Result<()> {
         let pool = pool.clone();
         let api_config = api_config.clone();
         let gphoto_client = gphoto_client.clone();
-        let cop = CoalescingWorker::new(args.download_concurrency, move |id: GPhotoItemId| {
-            let pool = pool.clone();
-            let api_config = api_config.clone();
-            let gphoto_client = gphoto_client.clone();
-            async move {
-                download_and_upload(&pool, &api_config, &gphoto_client, &id)
-                    .await
-                    .with_context(|| format!("copy failed for ite {}", id))
-            }
-        });
+        let cop =
+            CoalescingWorker::new(args.download_concurrency, move |item: WrappedMediaItem| {
+                let pool = pool.clone();
+                let api_config = api_config.clone();
+                let gphoto_client = gphoto_client.clone();
+                async move {
+                    download_and_upload(&pool, &api_config, &gphoto_client, &item.0)
+                        .await
+                        .with_context(|| format!("copy failed for item {}", item.0.id.unwrap()))
+                }
+            });
         cop
     };
 
@@ -748,8 +763,9 @@ async fn main() -> Result<()> {
         .await?
     }
     if let Some(gphoto_item_id) = args.gphoto_item_id {
-        let gphoto_item_id = GPhotoItemId(gphoto_item_id);
-        download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
+        todo!("{}", gphoto_item_id);
+        // let gphoto_item_id = GPhotoItemId(gphoto_item_id);
+        // download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
     }
     if args.all_shared {
         let shared_albums_stream = gphoto_client.shared_albums_stream().map(|album_or| {
