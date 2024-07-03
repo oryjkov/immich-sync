@@ -706,7 +706,7 @@ async fn main() -> Result<()> {
             prefix: None,
             key: v,
         });
-    let immich_client = ImmichClient::new(&args.immich_url, api_key);
+    let immich_client = ImmichClient::new(10, &args.immich_url, api_key);
     let gphoto_client = GPClient::new_from_file("auth_token.json", &args.client_secret).await?;
 
     let cop = {

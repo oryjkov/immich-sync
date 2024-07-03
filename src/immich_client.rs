@@ -38,10 +38,10 @@ impl<'a> Deref for ApiConfigWrapper<'a> {
 }
 
 impl ImmichClient {
-    pub fn new(immich_url: &str, api_key: Option<ApiKey>) -> Self {
+    pub fn new(n: usize, immich_url: &str, api_key: Option<ApiKey>) -> Self {
         ImmichClient {
             api_configs: Arc::new(Mutex::new(
-                [0..10]
+                [0..n]
                     .iter()
                     .map(|_| {
                         Box::new(Configuration {
