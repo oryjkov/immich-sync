@@ -1,5 +1,4 @@
-use anyhow::anyhow;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use colored::Colorize;
@@ -18,6 +17,7 @@ use immich_api::models;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use lib::coalescing_worker::CoalescingWorker;
 use lib::gpclient::GPClient;
+use lib::immich_client::ImmichClient;
 use lib::types::*;
 use log::{debug, error, info};
 use serde::Deserialize;
@@ -248,7 +248,7 @@ struct LinkedItem {
 // item in the given gphoto album.
 async fn link_album_items(
     pool: &Pool<Sqlite>,
-    api_config: &Configuration,
+    immich_client: &ImmichClient,
     gphoto_client: &GPClient,
     gphoto_album_id: &GPhotoAlbumId,
     album_name: &str,
@@ -275,7 +275,14 @@ async fn link_album_items(
         // TODO: get rid of this string intermediate conversion.
         let metadata = gphoto_item.media_metadata.as_ref().unwrap();
         let metadata = serde_json::to_string(&metadata).unwrap();
-        let res = link_item(pool, api_config, &gphoto_id, &filename, &metadata).await?;
+        let res = link_item(
+            pool,
+            &immich_client.get_config(),
+            &gphoto_id,
+            &filename,
+            &metadata,
+        )
+        .await?;
         let anon_res = match res {
             LookupResult::FoundUnique(_) => {
                 LookupResult::FoundUnique(ImmichItemId("_".to_string()))
@@ -378,10 +385,6 @@ async fn link_album(
         None => {
             print!("{:?}: ", album_title);
             Ok(None)
-            // let linked_items = link_album_items(&pool, &api_config, &gphoto_album_id).await?;
-            // let immich_album_id =
-            //     create_linked_album(pool, api_config, &gphoto_album_id, &name).await?;
-            // add_to_album(pool, api_config, &immich_album_id, &linked_items).await?;
         }
     }
 }
@@ -411,7 +414,7 @@ async fn save_album_link(
 // TODO: this is WIP.
 // TODO: which items to copy? NotFound only?
 async fn copy_all_to_album(
-    api_config: &Configuration,
+    immich_client: &ImmichClient,
     c: CoalescingWorker<WrappedMediaItem, ImmichItemId>,
     immich_album_id: &ImmichAlbumId,
     linked_items: &[LinkedItem],
@@ -471,7 +474,7 @@ async fn copy_all_to_album(
 
     if result.len() > 0 {
         let res = albums_api::add_assets_to_album(
-            api_config,
+            &immich_client.get_config(),
             &immich_album_id.0,
             models::BulkIdsDto { ids: result },
             None,
@@ -488,7 +491,7 @@ async fn copy_all_to_album(
 // database.
 async fn download_and_upload(
     pool: &Pool<Sqlite>,
-    api_config: &Configuration,
+    immich_client: &ImmichClient,
     gphoto_client: &GPClient,
     gphoto_item: &MediaItem,
 ) -> Result<ImmichItemId> {
@@ -523,7 +526,7 @@ async fn download_and_upload(
 
     // Upload to immich
     let res = assets_api::upload_asset(
-        api_config,
+        &immich_client.get_config(),
         asset_data,
         &hasher.result_str(),
         "immich-sync",
@@ -556,7 +559,7 @@ async fn download_and_upload(
 // a gphoto album identified by `gphoto_id`.
 async fn create_linked_album(
     pool: &Pool<Sqlite>,
-    api_config: &Configuration,
+    immich_client: &ImmichClient,
     gphoto_id: &GPhotoAlbumId,
     title: &str,
 ) -> Result<ImmichAlbumId> {
@@ -566,7 +569,7 @@ async fn create_linked_album(
         description: None,
         album_users: None, // When I passed in the current user, album page had 2 users registered
     };
-    let res = albums_api::create_album(api_config, req)
+    let res = albums_api::create_album(&immich_client.get_config(), req)
         .await
         .with_context(|| format!("failed to create an immich album with title {title:?}"))?;
     let immich_album_id = ImmichAlbumId(res.id);
@@ -604,7 +607,7 @@ async fn create_linked_album(
 
 async fn do_one_album(
     pool: &Pool<Sqlite>,
-    api_config: &Configuration,
+    immich_client: &ImmichClient,
     gphoto_client: &GPClient,
     cop: CoalescingWorker<WrappedMediaItem, ImmichItemId>,
     album_metadata: gphotos_api::models::Album,
@@ -647,28 +650,28 @@ async fn do_one_album(
                 immich_album_id
             } else {
                 debug!("album {album_title:?} already exists in immich but is mapped to another album, creating a new one");
-                create_linked_album(pool, api_config, &gphoto_album_id, &album_title).await?
+                create_linked_album(pool, immich_client, &gphoto_album_id, &album_title).await?
             }
         } else {
             // Create the new album in immich
             debug!(
                 "album {album_title:?} ({gphoto_album_id}) does not exist in immich, creating it"
             );
-            create_linked_album(pool, api_config, &gphoto_album_id, &album_title).await?
+            create_linked_album(pool, immich_client, &gphoto_album_id, &album_title).await?
         }
     };
     pb.set_message(format!("{:?}: linking album items", album_title));
     // Get the list of all media items in the gphoto album.
     let gphoto_items = link_album_items(
         pool,
-        api_config,
+        immich_client,
         gphoto_client,
         &gphoto_album_id,
         &album_title,
     )
     .await?;
     pb.set_message(format!("{:?}: copying album items", album_title));
-    copy_all_to_album(&api_config, cop, &immich_album_id, &gphoto_items, pb).await?;
+    copy_all_to_album(&immich_client, cop, &immich_album_id, &gphoto_items, pb).await?;
     Ok(())
 }
 
@@ -696,29 +699,27 @@ async fn main() -> Result<()> {
         .max_connections(1)
         .connect(&args.sqlite)
         .await?;
-    let api_config = configuration::Configuration {
-        api_key: env::vars()
-            .find(|(k, _)| k == "API_KEY")
-            .map(|(_, v)| configuration::ApiKey {
-                prefix: None,
-                key: v,
-            }),
-        base_path: args.immich_url,
-        ..Default::default()
-    };
+
+    let api_key = env::vars()
+        .find(|(k, _)| k == "API_KEY")
+        .map(|(_, v)| configuration::ApiKey {
+            prefix: None,
+            key: v,
+        });
+    let immich_client = ImmichClient::new(&args.immich_url, api_key);
     let gphoto_client = GPClient::new_from_file("auth_token.json", &args.client_secret).await?;
 
     let cop = {
         let pool = pool.clone();
-        let api_config = api_config.clone();
+        let immich_client = immich_client.clone();
         let gphoto_client = gphoto_client.clone();
         let cop =
             CoalescingWorker::new(args.download_concurrency, move |item: WrappedMediaItem| {
                 let pool = pool.clone();
-                let api_config = api_config.clone();
+                let immich_client = immich_client.clone();
                 let gphoto_client = gphoto_client.clone();
                 async move {
-                    download_and_upload(&pool, &api_config, &gphoto_client, &item.0)
+                    download_and_upload(&pool, &immich_client, &gphoto_client, &item.0)
                         .await
                         .with_context(|| format!("copy failed for item {}", item.0.id.unwrap()))
                 }
@@ -726,7 +727,7 @@ async fn main() -> Result<()> {
         cop
     };
 
-    let res = albums_api::get_all_albums(&api_config, None, None)
+    let res = albums_api::get_all_albums(&immich_client.get_config(), None, None)
         .await
         .with_context(|| format!("failed to get list of immich albums"))?;
     let immich_albums = res
@@ -744,7 +745,7 @@ async fn main() -> Result<()> {
             .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
         do_one_album(
             &pool,
-            &api_config,
+            &immich_client,
             &gphoto_client,
             cop.clone(),
             album_metadata,
@@ -775,7 +776,7 @@ async fn main() -> Result<()> {
                 let pb = all_albums_pb.clone();
                 pb.set_length(pb.length().unwrap() + 1);
                 let pool = pool.clone();
-                let api_config = api_config.clone();
+                let immich_client = immich_client.clone();
                 let gphoto_client = gphoto_client.clone();
                 let cop = cop.clone();
                 let multi = multi.clone();
@@ -785,7 +786,7 @@ async fn main() -> Result<()> {
                     info!("copying album {:?}", album.title);
                     let res = do_one_album(
                         &pool,
-                        &api_config,
+                        &immich_client,
                         &gphoto_client,
                         cop,
                         album,
