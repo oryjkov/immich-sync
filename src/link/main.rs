@@ -11,7 +11,6 @@ use gphotos_api::models::MediaItem;
 use immich_api::apis::albums_api;
 use immich_api::apis::assets_api;
 use immich_api::apis::configuration;
-use immich_api::apis::configuration::Configuration;
 use immich_api::apis::search_api;
 use immich_api::models;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -19,7 +18,7 @@ use lib::coalescing_worker::CoalescingWorker;
 use lib::gpclient::GPClient;
 use lib::immich_client::ImmichClient;
 use lib::types::*;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
@@ -54,6 +53,9 @@ struct Args {
 
     #[arg(long, default_value_t = 10)]
     download_concurrency: usize,
+
+    #[arg(long, default_value_t = false)]
+    read_only: bool,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -466,15 +468,19 @@ async fn copy_all_to_album(
         .collect::<Vec<_>>();
 
     if result.len() > 0 {
-        let res = albums_api::add_assets_to_album(
-            &immich_client.get_config(),
-            &immich_album_id.0,
-            models::BulkIdsDto { ids: result },
-            None,
-        )
-        .await
-        .with_context(|| format!("failed to add items to immich album {immich_album_id}"))?;
-        debug!("add to album result: {res:?}");
+        if immich_client.read_only {
+            warn!("immich: add {:?} to album {}", result, immich_album_id.0);
+        } else {
+            let res = albums_api::add_assets_to_album(
+                &immich_client.get_config(),
+                &immich_album_id.0,
+                models::BulkIdsDto { ids: result },
+                None,
+            )
+            .await
+            .with_context(|| format!("failed to add items to immich album {immich_album_id}"))?;
+            debug!("add to album result: {res:?}");
+        }
     }
     Ok(())
 }
@@ -519,7 +525,7 @@ async fn download_and_upload(
 
     // Upload to immich
     let res = assets_api::upload_asset(
-        &immich_client.get_config(),
+        &(immich_client.get_config_for_writing()? as lib::immich_client::ApiConfigWrapper),
         asset_data,
         &hasher.result_str(),
         "immich-sync",
@@ -562,9 +568,12 @@ async fn create_linked_album(
         description: None,
         album_users: None, // When I passed in the current user, album page had 2 users registered
     };
-    let res = albums_api::create_album(&immich_client.get_config(), req)
-        .await
-        .with_context(|| format!("failed to create an immich album with title {title:?}"))?;
+    let res = albums_api::create_album(
+        &(immich_client.get_config_for_writing()? as lib::immich_client::ApiConfigWrapper),
+        req,
+    )
+    .await
+    .with_context(|| format!("failed to create an immich album with title {title:?}"))?;
     let immich_album_id = ImmichAlbumId(res.id);
 
     let mut tx = pool.begin().await?;
@@ -699,7 +708,7 @@ async fn main() -> Result<()> {
             prefix: None,
             key: v,
         });
-    let immich_client = ImmichClient::new(10, &args.immich_url, api_key);
+    let immich_client = ImmichClient::new(10, &args.immich_url, api_key, args.read_only);
     let gphoto_client = GPClient::new_from_file("auth_token.json", &args.client_secret).await?;
 
     let cop = {
@@ -712,6 +721,10 @@ async fn main() -> Result<()> {
                 let immich_client = immich_client.clone();
                 let gphoto_client = gphoto_client.clone();
                 async move {
+                    if immich_client.read_only {
+                        // bail out early to not have to download items.
+                        return Err(anyhow!("running read only, won't download"));
+                    }
                     download_and_upload(&pool, &immich_client, &gphoto_client, &item.0)
                         .await
                         .with_context(|| format!("copy failed for item {}", item.0.id.unwrap()))

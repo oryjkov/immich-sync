@@ -12,6 +12,7 @@ use immich_api::apis::configuration::{ApiKey, Configuration};
 pub struct ImmichClient {
     api_configs: Arc<Mutex<Vec<Box<Configuration>>>>,
     configs_empty: Arc<Condvar>,
+    pub read_only: bool,
 }
 
 pub struct ApiConfigWrapper<'a> {
@@ -40,7 +41,7 @@ impl<'a> Deref for ApiConfigWrapper<'a> {
 }
 
 impl ImmichClient {
-    pub fn new(n: usize, immich_url: &str, api_key: Option<ApiKey>) -> Self {
+    pub fn new(n: usize, immich_url: &str, api_key: Option<ApiKey>, read_only: bool) -> Self {
         ImmichClient {
             api_configs: Arc::new(Mutex::new(vec![
                 {
@@ -53,6 +54,7 @@ impl ImmichClient {
                 n
             ])),
             configs_empty: Arc::new(Condvar::new()),
+            read_only,
         }
     }
     pub fn get_config(&self) -> ApiConfigWrapper {
@@ -76,5 +78,30 @@ impl ImmichClient {
             api_config: Some(api_config),
             return_to: &self,
         }
+    }
+    pub fn get_config_for_writing(&self) -> anyhow::Result<ApiConfigWrapper> {
+        if self.read_only {
+            return Err(anyhow::anyhow!("asked for writing with a read-only config"));
+        }
+        let api_config = {
+            let mut g = self.api_configs.lock().unwrap();
+            loop {
+                match g.pop() {
+                    Some(api_config) => {
+                        debug!("took immich api config, remaining: {}", g.len());
+                        break api_config;
+                    }
+                    None => {
+                        debug!("ran out of immich api configs, {}", g.len());
+                        g = self.configs_empty.wait(g).unwrap();
+                    }
+                }
+            }
+        };
+
+        Ok(ApiConfigWrapper {
+            api_config: Some(api_config),
+            return_to: &self,
+        })
     }
 }
