@@ -188,7 +188,7 @@ enum LookupResult {
 // 2. filename and metadata.
 async fn link_item(
     pool: &Pool<Sqlite>,
-    api_config: &Configuration,
+    immich_client: &ImmichClient,
     gphoto_id: &GPhotoItemId,
     filename: &str,
     metadata: &str,
@@ -212,7 +212,7 @@ async fn link_item(
         ..Default::default()
     };
     let mut rv = LookupResult::NotFound;
-    let res = search_api::search_metadata(api_config, search_req).await?;
+    let res = search_api::search_metadata(&immich_client.get_config(), search_req).await?;
     if res.assets.items.len() == 1 {
         rv = LookupResult::FoundUnique(ImmichItemId(res.assets.items[0].id.clone()));
     } else if res.assets.items.len() > 1 {
@@ -275,14 +275,7 @@ async fn link_album_items(
         // TODO: get rid of this string intermediate conversion.
         let metadata = gphoto_item.media_metadata.as_ref().unwrap();
         let metadata = serde_json::to_string(&metadata).unwrap();
-        let res = link_item(
-            pool,
-            &immich_client.get_config(),
-            &gphoto_id,
-            &filename,
-            &metadata,
-        )
-        .await?;
+        let res = link_item(pool, immich_client, &gphoto_id, &filename, &metadata).await?;
         let anon_res = match res {
             LookupResult::FoundUnique(_) => {
                 LookupResult::FoundUnique(ImmichItemId("_".to_string()))
