@@ -1,3 +1,4 @@
+use log::debug;
 use std::{
     ops::Deref,
     sync::{Arc, Condvar, Mutex},
@@ -22,10 +23,11 @@ impl<'a> Drop for ApiConfigWrapper<'a> {
     fn drop(&mut self) {
         let ic = self.return_to;
 
-        ic.api_configs
-            .lock()
-            .unwrap()
-            .push(self.api_config.take().unwrap());
+        {
+            let mut g = ic.api_configs.lock().unwrap();
+            g.push(self.api_config.take().unwrap());
+            debug!("returned immich api config, remaining: {}", g.len());
+        }
         ic.configs_empty.notify_one();
     }
 }
@@ -40,18 +42,16 @@ impl<'a> Deref for ApiConfigWrapper<'a> {
 impl ImmichClient {
     pub fn new(n: usize, immich_url: &str, api_key: Option<ApiKey>) -> Self {
         ImmichClient {
-            api_configs: Arc::new(Mutex::new(
-                [0..n]
-                    .iter()
-                    .map(|_| {
-                        Box::new(Configuration {
-                            api_key: api_key.clone(),
-                            base_path: immich_url.to_string(),
-                            ..Default::default()
-                        })
+            api_configs: Arc::new(Mutex::new(vec![
+                {
+                    Box::new(Configuration {
+                        api_key: api_key,
+                        base_path: immich_url.to_string(),
+                        ..Default::default()
                     })
-                    .collect(),
-            )),
+                };
+                n
+            ])),
             configs_empty: Arc::new(Condvar::new()),
         }
     }
@@ -61,9 +61,11 @@ impl ImmichClient {
             loop {
                 match g.pop() {
                     Some(api_config) => {
+                        debug!("took immich api config, remaining: {}", g.len());
                         break api_config;
                     }
                     None => {
+                        debug!("ran out of immich api configs, {}", g.len());
                         g = self.configs_empty.wait(g).unwrap();
                     }
                 }
