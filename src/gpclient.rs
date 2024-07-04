@@ -3,7 +3,7 @@ use anyhow::{anyhow, Context};
 use async_stream::try_stream;
 use bytes::Bytes;
 use futures_core::stream::Stream;
-use log::{debug, error, info};
+use log::{debug, info};
 use oauth2::basic::BasicClient;
 use oauth2::{
     ClientId, ClientSecret, RefreshToken, StandardTokenResponse, TokenResponse, TokenUrl,
