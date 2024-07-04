@@ -1,4 +1,5 @@
-cat | sqlite3 sqlite.db <<EOF
+#!/bin/bash
+cat | sqlite3 "${1:-sqlite.db}" <<EOF
 CREATE TABLE IF NOT EXISTS "album_album_links" (
    [gphoto_id] TEXT NOT NULL,
    [immich_id] TEXT NOT NULL,
