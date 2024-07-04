@@ -41,30 +41,8 @@ use std::net::TcpListener;
 
 use std::fs;
 
-#[derive(serde::Deserialize)]
-struct InstalledJs {
-    installed: SecretJs,
-}
-#[derive(serde::Deserialize)]
-struct SecretJs {
-    client_id: String,
-    auth_uri: String,
-    token_uri: String,
-    client_secret: String,
-}
-
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    #[arg(long, default_value = None)]
-    client_secret: String,
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-
-    let js = fs::read_to_string(args.client_secret)?;
+pub async fn get_auth(client_secret: &str) -> anyhow::Result<()> {
+    let js = fs::read_to_string(client_secret)?;
     let secret_js = serde_json::from_str::<InstalledJs>(&js)?.installed;
 
     let google_client_id = ClientId::new(secret_js.client_id);

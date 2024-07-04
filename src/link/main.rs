@@ -15,6 +15,7 @@ use immich_api::apis::search_api;
 use immich_api::models;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use lib::coalescing_worker::CoalescingWorker;
+use lib::gpclient::get_auth;
 use lib::gpclient::GPClient;
 use lib::immich_client::ImmichClient;
 use lib::types::*;
@@ -65,6 +66,9 @@ struct Args {
 
     #[arg(long, default_value = ".env")]
     immich_auth: String,
+
+    #[arg(long, default_value = "auth_token.json")]
+    auth_token: String,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -754,7 +758,15 @@ async fn main() -> Result<()> {
             key: v,
         });
     let immich_client = ImmichClient::new(10, &args.immich_url, api_key, args.read_only);
-    let gphoto_client = GPClient::new_from_file("auth_token.json", &args.client_secret).await?;
+
+    if !std::path::Path::new(&args.auth_token).exists() {
+        warn!(
+            "auth file {:?} does not exist, will request new auth",
+            args.auth_token
+        );
+        get_auth(&args.client_secret, &args.auth_token).await?;
+    }
+    let gphoto_client = GPClient::new_from_file(&args.client_secret, &args.auth_token).await?;
 
     let cop = {
         let pool = pool.clone();

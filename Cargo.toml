@@ -11,10 +11,6 @@ name = "client"
 path = "src/main.rs"
 
 [[bin]]
-name = "get-auth"
-path = "src/get-auth/main.rs"
-
-[[bin]]
 name = "link"
 path = "src/link/main.rs"
 
