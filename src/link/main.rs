@@ -4,7 +4,6 @@ use clap::Parser;
 use colored::Colorize;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
-use dotenvy::dotenv;
 use futures::pin_mut;
 use futures::stream;
 use futures::StreamExt;
