@@ -49,7 +49,7 @@ struct Args {
     #[arg(long, default_value = None)]
     all_shared: bool,
 
-    #[arg(long, default_value = None)]
+    #[arg(long)]
     client_secret: String,
 
     #[arg(long, default_value_t = 10)]
