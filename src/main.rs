@@ -269,10 +269,9 @@ async fn link_album_items(
     pool: &Pool<Sqlite>,
     immich_client: &ImmichClient,
     gphoto_client: &GPClient,
-    album_metadata: gphotos_api::models::Album,
+    album_metadata: &gphotos_api::models::Album,
 ) -> Result<Vec<LinkedItem>> {
-    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.ok_or(anyhow!("missing id"))?);
-    let album_title: String = album_metadata.title.unwrap_or("<No title>".to_string());
+    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.clone().ok_or(anyhow!("missing id"))?);
 
     let gphoto_items = gphoto_client
         .album_items_stream(&gphoto_album_id)
@@ -307,21 +306,13 @@ async fn link_album_items(
     if errors.len() > 0 {
         error!("link albums items errors: {:?}", errors);
     }
-    let ok_res = link_results
+    Ok(link_results
         .into_iter()
         .filter_map(|r| match r {
             Ok(l) => Some(l),
             Err(_) => None,
         })
-        .collect::<Vec<_>>();
-    let ress = group_items(ok_res.iter());
-    info!(
-        "linking {album_title}({}): {:?}",
-        album_metadata.product_url.unwrap_or("no_url!".to_string()),
-        ress
-    );
-
-    Ok(ok_res)
+        .collect::<Vec<_>>())
 }
 
 fn match_metadata(gphoto_metadata: &ImageData, immich_metadata: &ImageData) -> bool {
@@ -364,47 +355,78 @@ fn match_metadata(gphoto_metadata: &ImageData, immich_metadata: &ImageData) -> b
 // an immich album and tries to link them. Linking is done based on the album name only.
 // TODO: this picks a random album id for albums that have the same title. Detect it at least
 async fn link_album(
-    album_title: &str,
-    immich_albums: &[(String, ImmichAlbumId)],
-) -> Result<Option<ImmichAlbumId>> {
-    // Maps various version of the (immich) album title to immich album id. The title "as-is" takes
-    // precedence. We then lookup gphoto album title (variants) in that map.
-    let mut m: HashMap<String, ImmichAlbumId> = HashMap::new();
+    pool: &Pool<Sqlite>,
+    immich_client: &ImmichClient,
+    album_metadata: &gphotos_api::models::Album,
+    immich_albums: &HashMap<String, Vec<ImmichAlbumId>>,
+) -> Result<ImmichAlbumId> {
+    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.clone().ok_or(anyhow!("missing id"))?);
+    let album_title: String = album_metadata
+        .title
+        .clone()
+        .unwrap_or("<No title>".to_string());
 
-    // Remove spaces - some albums have a trailing space.
-    for (name, id) in immich_albums {
-        let name = name
+    if let Some(immich_album_id) =
+        sqlx::query(r#"SELECT immich_id FROM album_album_links WHERE gphoto_id = $1"#)
+            .bind(&gphoto_album_id.0)
+            .fetch_optional(pool)
+            .await?
+            .map(|row| ImmichAlbumId(row.get("immich_id")))
+    {
+        debug!("album {album_title:?} ({gphoto_album_id}) exists in immich and we already know it has immich id {immich_album_id}");
+        return Ok(immich_album_id);
+    };
+
+    if let Some(immich_album_id) = {
+        let nospace_name = album_title
             .split(' ')
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
-        m.insert(name, id.clone());
-    }
-
-    // Unicode normalization. I had "Trip in Graubu\u{308}nden" and "Trip in Graubünden" in albums
-    for (name, id) in immich_albums {
-        let name: String = name.nfc().collect();
-        m.insert(name, id.clone());
-    }
-    // This mapping takes precedence in case there are albums with trailing space and without.
-    for (name, id) in immich_albums {
-        m.insert(name.clone(), id.clone());
-    }
-
-    let nospace_name = album_title
-        .split(' ')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let name_nfc: String = album_title.nfc().collect();
-
-    match m
-        .get(album_title)
-        .or_else(|| m.get(&nospace_name))
-        .or_else(|| m.get(&name_nfc))
-    {
-        Some(immich_id) => Ok(Some(immich_id.clone())),
-        None => Ok(None),
+        let name_nfc: String = album_title.nfc().collect();
+        match immich_albums
+            .get(&album_title)
+            .or_else(|| immich_albums.get(&nospace_name))
+            .or_else(|| immich_albums.get(&name_nfc))
+        {
+            Some(immich_ids) => {
+                if immich_ids.len() == 0 {
+                    panic!("");
+                } else if immich_ids.len() == 1 {
+                    Some(immich_ids[0].clone())
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    } {
+        debug!(
+            "album {album_title:?} ({gphoto_album_id}) matched with immich album {immich_album_id}"
+        );
+        if let Some(_) = sqlx::query(
+            r#"SELECT gphoto_album_id FROM album_album_links WHERE immich_album_id = $1"#,
+        )
+        .bind(&immich_album_id.0)
+        .fetch_optional(pool)
+        .await?
+        .map(|row| ImmichAlbumId(row.get("immich_id")))
+        {
+            debug!("album {album_title:?} already exists in immich but is mapped to another album, creating a new one");
+            if immich_client.read_only {
+                Ok(ImmichAlbumId("creating new album".to_string()))
+            } else {
+                create_linked_album(pool, immich_client, &gphoto_album_id, &album_title).await
+            }
+        } else {
+            // Preserve the mapping in the local db.
+            save_album_link(pool, &gphoto_album_id, &immich_album_id).await?;
+            Ok(immich_album_id)
+        }
+    } else {
+        // Create the new album in immich
+        debug!("album {album_title:?} ({gphoto_album_id}) does not exist in immich, creating it");
+        create_linked_album(pool, immich_client, &gphoto_album_id, &album_title).await
     }
 }
 
@@ -642,10 +664,9 @@ async fn do_one_album(
     gphoto_client: &GPClient,
     cop: CoalescingWorker<WrappedMediaItem, ImmichItemId>,
     album_metadata: gphotos_api::models::Album,
-    immich_albums: &[(String, ImmichAlbumId)],
+    immich_albums: &HashMap<String, Vec<ImmichAlbumId>>,
     multi: MultiProgress,
 ) -> Result<Vec<LinkedItem>> {
-    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.clone().ok_or(anyhow!("missing id"))?);
     let pb = multi.add(ProgressBar::new(
         album_metadata
             .media_items_count
@@ -668,36 +689,23 @@ async fn do_one_album(
         .unwrap_or("<No title>".to_string());
     pb.set_message(format!("{:?}: finding immich album", album_title));
 
-    let immich_album_id = if let Some(immich_album_id) =
-        sqlx::query(r#"SELECT immich_id FROM album_album_links WHERE gphoto_id = $1"#)
-            .bind(&gphoto_album_id.0)
-            .fetch_optional(pool)
-            .await?
-            .map(|row| ImmichAlbumId(row.get("immich_id")))
-    {
-        debug!("album {album_title:?} ({gphoto_album_id}) exists in immich and we already know it has immich id {immich_album_id}");
-        immich_album_id
-    } else {
-        if let Some(immich_album_id) = link_album(album_title.as_str(), &immich_albums).await? {
-            debug!("album {album_title:?} ({gphoto_album_id}) found in immich and has id {immich_album_id}");
-            // Preserve the mapping in the local db (TODO: should do nothing if the mapping exists).
-            if save_album_link(pool, &gphoto_album_id, &immich_album_id).await? {
-                immich_album_id
-            } else {
-                debug!("album {album_title:?} already exists in immich but is mapped to another album, creating a new one");
-                create_linked_album(pool, immich_client, &gphoto_album_id, &album_title).await?
-            }
-        } else {
-            // Create the new album in immich
-            debug!(
-                "album {album_title:?} ({gphoto_album_id}) does not exist in immich, creating it"
-            );
-            create_linked_album(pool, immich_client, &gphoto_album_id, &album_title).await?
-        }
-    };
+    let immich_album_id = link_album(pool, immich_client, &album_metadata, &immich_albums).await?;
     pb.set_message(format!("{:?}: linking album items", album_title));
+
     // Get the list of all media items in the gphoto album.
-    let linked_items = link_album_items(pool, immich_client, gphoto_client, album_metadata).await?;
+    let linked_items =
+        link_album_items(pool, immich_client, gphoto_client, &album_metadata).await?;
+
+    let ress = group_items(linked_items.iter());
+    info!(
+        "linked gphoto {} to immich {}, results: {:?}",
+        album_metadata
+            .product_url
+            .clone()
+            .unwrap_or("no_url".to_string()),
+        immich_album_id,
+        ress
+    );
     if !immich_client.read_only {
         pb.set_message(format!("{:?}: copying album items", album_title));
         copy_all_to_album(&immich_client, cop, &immich_album_id, &linked_items, pb).await?;
@@ -796,11 +804,37 @@ async fn main() -> Result<()> {
     let res = albums_api::get_all_albums(&immich_client.get_config(), None, None)
         .await
         .with_context(|| format!("failed to get list of immich albums"))?;
+
     let immich_albums = res
         .into_iter()
         .map(|album| (album.album_name, ImmichAlbumId(album.id)))
         .collect::<Vec<_>>();
-    let immich_albums = Arc::new(immich_albums);
+    // Maps various version of the (immich) album title to immich album id. The title "as-is" takes
+    // precedence. We then lookup gphoto album title (variants) in that map.
+    let mut m: HashMap<String, Vec<ImmichAlbumId>> = HashMap::new();
+
+    // Remove spaces - some albums have a trailing space.
+    for (name, id) in &immich_albums {
+        let name = name
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        m.entry(name).or_default().push(id.clone());
+        // m.insert(name, id.clone());
+    }
+
+    // Unicode normalization. I had "Trip in Graubu\u{308}nden" and "Trip in Graubünden" in albums
+    for (name, id) in &immich_albums {
+        let name: String = name.nfc().collect();
+        m.entry(name).or_default().push(id.clone());
+    }
+    // This mapping takes precedence in case there are albums with trailing space and without.
+    for (name, id) in immich_albums {
+        m.entry(name).or_default().push(id.clone());
+    }
+    let immich_albums = Arc::new(m);
+
     debug!("immich albums: {:?}", immich_albums);
 
     if let Some(gphoto_album_id) = args.gphoto_album_id {
