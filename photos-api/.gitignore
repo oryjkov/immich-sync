@@ -1,1 +1,6 @@
-generated
+/target/
+**/*.rs.bk
+Cargo.lock
+.openapi-generator-ignore
+.travis.yml
+.openapi-generator
