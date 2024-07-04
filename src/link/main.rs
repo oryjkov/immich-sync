@@ -721,11 +721,31 @@ async fn main() -> Result<()> {
 
     let _ = dotenvy::from_filename(args.immich_auth)
         .inspect_err(|err| warn!("failed to read .env file: {:?}", err));
+
+    let mut create_schemas = false;
+    if !std::path::Path::new(&args.db).exists() {
+        warn!("DB not found, creating a new one in {}", args.db);
+        let _ = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .append(true)
+            .open(std::path::Path::new(&args.db))
+            .with_context(|| format!("failed to create db file {}", args.db))?;
+        create_schemas = true;
+    }
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&args.db)
         .await
         .with_context(|| format!("failed to open db file {}", args.db))?;
+    if create_schemas {
+        let db_schema = include_str!("db_schema.sql");
+
+        sqlx::raw_sql(db_schema)
+            .execute(&pool)
+            .await
+            .with_context(|| format!("failed to create new db schema"))?;
+    }
 
     let api_key = env::vars()
         .find(|(k, _)| k == "IMMICH_API_KEY")

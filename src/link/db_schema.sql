@@ -1,10 +1,8 @@
-#!/bin/bash
-cat | sqlite3 "${1:-sqlite.db}" <<EOF
 CREATE TABLE IF NOT EXISTS "album_album_links" (
    [gphoto_id] TEXT NOT NULL,
    [immich_id] TEXT NOT NULL,
-   UNIQUE(gphoto_id)
-   UNIQUE(immich_id)
+   UNIQUE(gphoto_id),
+   UNIQUE(immich_id),
    PRIMARY KEY (gphoto_id)
 ) STRICT;
 CREATE TABLE [created_albums] (
@@ -14,8 +12,7 @@ CREATE TABLE [created_albums] (
 CREATE TABLE IF NOT EXISTS "item_item_links" (
    [gphoto_id] TEXT NOT NULL,
    [immich_id] TEXT NOT NULL,
-   UNIQUE(gphoto_id)
-   UNIQUE(immich_id)
+   UNIQUE(gphoto_id),
+   UNIQUE(immich_id),
    PRIMARY KEY (gphoto_id)
 ) STRICT;
-EOF
