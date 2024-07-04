@@ -37,7 +37,7 @@ struct Args {
     #[arg(long)]
     immich_url: String,
 
-    #[arg(long, default_value = "download/sqlite.db")]
+    #[arg(long, default_value = "sqlite.db")]
     sqlite: String,
 
     #[arg(long, default_value = None)]
@@ -725,7 +725,8 @@ async fn main() -> Result<()> {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&args.sqlite)
-        .await?;
+        .await
+        .with_context(|| format!("failed to open db file {}", args.sqlite))?;
 
     let api_key = env::vars()
         .find(|(k, _)| k == "IMMICH_API_KEY")
