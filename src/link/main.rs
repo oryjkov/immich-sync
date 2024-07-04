@@ -37,7 +37,7 @@ struct Args {
     immich_url: String,
 
     #[arg(long, default_value = "sqlite.db")]
-    sqlite: String,
+    db: String,
 
     #[arg(long, default_value = None)]
     gphoto_album_id: Option<String>,
@@ -723,9 +723,9 @@ async fn main() -> Result<()> {
         .inspect_err(|err| warn!("failed to read .env file: {:?}", err));
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&args.sqlite)
+        .connect(&args.db)
         .await
-        .with_context(|| format!("failed to open db file {}", args.sqlite))?;
+        .with_context(|| format!("failed to open db file {}", args.db))?;
 
     let api_key = env::vars()
         .find(|(k, _)| k == "IMMICH_API_KEY")
