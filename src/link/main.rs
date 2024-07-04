@@ -275,28 +275,37 @@ async fn link_album_items(
             }
         })
         .collect::<Vec<_>>();
-
-    let mut ress: HashMap<_, usize> = HashMap::new();
-    let mut link_results = vec![];
-    for gphoto_item in gphoto_items {
-        let res = link_item(pool, immich_client, &gphoto_item).await?;
-        let anon_res = match res {
-            LookupResult::FoundUnique(_) => {
-                LookupResult::FoundUnique(ImmichItemId("_".to_string()))
-            }
-            LookupResult::MatchedUnique(_) => {
-                LookupResult::MatchedUnique(ImmichItemId("_".to_string()))
-            }
-            _ => res.clone(),
-        };
-        *ress.entry(anon_res).or_default() += 1;
-        link_results.push(LinkedItem {
+    let link_results = stream::iter(gphoto_items.into_iter().map(|gphoto_item| async move {
+        let id = gphoto_item.id.clone();
+        Ok(LinkedItem {
+            link_type: link_item(pool, immich_client, &gphoto_item)
+                .await
+                .with_context(|| format!("link item failed on {:?}", id))?,
             gphoto_item,
-            link_type: res,
-        });
+        })
+    }))
+    .buffer_unordered(1)
+    .collect::<Vec<_>>()
+    .await;
+
+    let errors = link_results
+        .iter()
+        .filter(|x: &&Result<LinkedItem>| x.is_err())
+        .collect::<Vec<_>>();
+    if errors.len() > 0 {
+        error!("link albums items errors: {:?}", errors);
     }
+    let ok_res = link_results
+        .into_iter()
+        .filter_map(|r| match r {
+            Ok(l) => Some(l),
+            Err(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let ress = group_items(ok_res.iter());
     info!("result from linking album items {album_name}: {:?}", ress);
-    Ok(link_results)
+
+    Ok(ok_res)
 }
 
 fn match_metadata(gphoto_metadata: &ImageData, immich_metadata: &ImageData) -> bool {
@@ -441,7 +450,8 @@ async fn copy_all_to_album(
                 res
             }
         })
-        .buffer_unordered(100) // 100 is just a large number
+        .buffer_unordered(100) // 100 is just a large number,
+        // concurrency is limited internally in the downloader.
         .collect::<Vec<_>>()
         .await;
     let mut result = z
@@ -617,7 +627,7 @@ async fn do_one_album(
     album_metadata: gphotos_api::models::Album,
     immich_albums: &[(String, ImmichAlbumId)],
     multi: MultiProgress,
-) -> Result<()> {
+) -> Result<Vec<LinkedItem>> {
     let gphoto_album_id = GPhotoAlbumId(album_metadata.id.ok_or(anyhow!("missing id"))?);
     let pb = multi.add(ProgressBar::new(
         album_metadata
@@ -666,7 +676,7 @@ async fn do_one_album(
     };
     pb.set_message(format!("{:?}: linking album items", album_title));
     // Get the list of all media items in the gphoto album.
-    let gphoto_items = link_album_items(
+    let linked_items = link_album_items(
         pool,
         immich_client,
         gphoto_client,
@@ -675,8 +685,8 @@ async fn do_one_album(
     )
     .await?;
     pb.set_message(format!("{:?}: copying album items", album_title));
-    copy_all_to_album(&immich_client, cop, &immich_album_id, &gphoto_items, pb).await?;
-    Ok(())
+    copy_all_to_album(&immich_client, cop, &immich_album_id, &linked_items, pb).await?;
+    Ok(linked_items)
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -751,7 +761,7 @@ async fn main() -> Result<()> {
             .get_album(&gphoto_album_id)
             .await
             .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
-        do_one_album(
+        let linked_items = do_one_album(
             &pool,
             &immich_client,
             &gphoto_client,
@@ -760,7 +770,7 @@ async fn main() -> Result<()> {
             &immich_albums,
             multi.clone(),
         )
-        .await?
+        .await?;
     }
     if let Some(gphoto_item_id) = args.gphoto_item_id {
         todo!("{}", gphoto_item_id);
@@ -813,13 +823,13 @@ async fn main() -> Result<()> {
             .buffer_unordered(1)
             .collect::<Vec<_>>()
             .await;
-        info!(
-            "shared albums: {:?}",
-            shared_albums_results
-                .into_iter()
-                .filter(|x| x.is_err())
-                .collect::<Vec<_>>()
-        );
+        let errors = shared_albums_results
+            .into_iter()
+            .filter(|x| x.is_err())
+            .collect::<Vec<_>>();
+        if errors.len() > 0 {
+            error!("shared albums errors: {:?}", errors);
+        }
     }
     if let Some(n) = args.items {
         let items_pb = multi.add(ProgressBar::new(1));
@@ -844,7 +854,10 @@ async fn main() -> Result<()> {
                     let item = media_item?;
                     let res = link_item(&pool, &immich_client, &item).await;
                     pb.inc(1);
-                    res
+                    res.map(|res| LinkedItem {
+                        gphoto_item: item,
+                        link_type: res,
+                    })
                 }
             })
             .collect::<Vec<_>>()
@@ -855,25 +868,29 @@ async fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .await;
         let num_err = res.iter().filter(|r| r.is_err()).count();
-
-        let mut ress: HashMap<_, usize> = HashMap::new();
-        res.into_iter()
-            .filter_map(|r| match r {
-                Ok(l) => Some(l),
-                Err(_) => None,
-            })
-            .map(|res| match res {
-                LookupResult::FoundUnique(_) => {
-                    LookupResult::FoundUnique(ImmichItemId("_".to_string()))
-                }
-                LookupResult::MatchedUnique(_) => {
-                    LookupResult::MatchedUnique(ImmichItemId("_".to_string()))
-                }
-                _ => res.clone(),
-            })
-            .for_each(|anon_res| *ress.entry(anon_res).or_default() += 1);
-        info!("matching results: {:?}", ress);
         info!("num errors: {}", num_err);
+
+        let ress = group_items(res.iter().filter_map(|r| match r {
+            Ok(l) => Some(l),
+            Err(_) => None,
+        }));
+        info!("matching results: {:?}", ress);
     }
     Ok(())
+}
+
+fn group_items<'a>(items: impl Iterator<Item = &'a LinkedItem>) -> HashMap<LookupResult, usize> {
+    let mut ress: HashMap<_, usize> = HashMap::new();
+    items
+        .map(|res| match res.link_type {
+            LookupResult::FoundUnique(_) => {
+                LookupResult::FoundUnique(ImmichItemId("_".to_string()))
+            }
+            LookupResult::MatchedUnique(_) => {
+                LookupResult::MatchedUnique(ImmichItemId("_".to_string()))
+            }
+            _ => res.link_type.clone(),
+        })
+        .for_each(|anon_res| *ress.entry(anon_res).or_default() += 1);
+    ress
 }
