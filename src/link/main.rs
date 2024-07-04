@@ -63,6 +63,9 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     early_exit: bool,
+
+    #[arg(long, default_value = ".env")]
+    immich_auth: String,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -715,16 +718,17 @@ async fn main() -> Result<()> {
     indicatif_log_bridge::LogWrapper::new(multi.clone(), logger)
         .try_init()
         .unwrap();
-
-    dotenv().expect(".env file not found");
     let args = Args::parse();
+
+    let _ = dotenvy::from_filename(args.immich_auth)
+        .inspect_err(|err| warn!("failed to read .env file: {:?}", err));
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&args.sqlite)
         .await?;
 
     let api_key = env::vars()
-        .find(|(k, _)| k == "API_KEY")
+        .find(|(k, _)| k == "IMMICH_API_KEY")
         .map(|(_, v)| configuration::ApiKey {
             prefix: None,
             key: v,
