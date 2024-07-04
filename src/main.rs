@@ -504,6 +504,7 @@ async fn copy_all_to_album(
         result.push(match &linked_item.link_type {
             // Re-do album association anyways since we are certain of the mapping here.
             LookupResult::MatchedUniqueDB(immich_id) => immich_id.clone(),
+            LookupResult::MatchedUnique(immich_id) => immich_id.clone(),
             _ => {
                 continue;
             }
