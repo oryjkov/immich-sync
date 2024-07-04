@@ -56,6 +56,9 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     read_only: bool,
+
+    #[arg(long, default_value = None)]
+    items: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -191,10 +194,14 @@ enum LookupResult {
 async fn link_item(
     pool: &Pool<Sqlite>,
     immich_client: &ImmichClient,
-    gphoto_id: &GPhotoItemId,
-    filename: &str,
-    metadata: &str,
+    gphoto_item: &MediaItem,
 ) -> Result<LookupResult> {
+    let gphoto_id = GPhotoItemId(gphoto_item.id.as_ref().unwrap().clone());
+    let filename = gphoto_item.filename.as_ref().unwrap();
+    // TODO: get rid of this string intermediate conversion.
+    let metadata = gphoto_item.media_metadata.as_ref().unwrap();
+    let metadata = serde_json::to_string(&metadata).unwrap();
+
     let local_match = sqlx::query(r#"SELECT immich_id FROM item_item_links WHERE gphoto_id = $1"#)
         .bind(&gphoto_id.0)
         .fetch_optional(pool)
@@ -205,7 +212,7 @@ async fn link_item(
         )));
     }
 
-    let gphoto_metadata: ImageData = serde_json::from_str(metadata)
+    let gphoto_metadata: ImageData = serde_json::from_str(&metadata)
         .with_context(|| format!("failed to parse gphoto metadata"))?;
 
     let search_req = models::MetadataSearchDto {
@@ -272,12 +279,7 @@ async fn link_album_items(
     let mut ress: HashMap<_, usize> = HashMap::new();
     let mut link_results = vec![];
     for gphoto_item in gphoto_items {
-        let gphoto_id = GPhotoItemId(gphoto_item.id.as_ref().unwrap().clone());
-        let filename = gphoto_item.filename.as_ref().unwrap();
-        // TODO: get rid of this string intermediate conversion.
-        let metadata = gphoto_item.media_metadata.as_ref().unwrap();
-        let metadata = serde_json::to_string(&metadata).unwrap();
-        let res = link_item(pool, immich_client, &gphoto_id, &filename, &metadata).await?;
+        let res = link_item(pool, immich_client, &gphoto_item).await?;
         let anon_res = match res {
             LookupResult::FoundUnique(_) => {
                 LookupResult::FoundUnique(ImmichItemId("_".to_string()))
@@ -452,7 +454,7 @@ async fn copy_all_to_album(
             }
         })
         .collect::<Vec<_>>();
-    info!("uploaded {} items", result.len());
+    debug!("uploaded {} items", result.len());
     for linked_item in linked_items {
         result.push(match &linked_item.link_type {
             // Re-do album association anyways since we are certain of the mapping here.
@@ -789,7 +791,7 @@ async fn main() -> Result<()> {
                 let immich_albums = immich_albums.clone();
                 async move {
                     let album = album_or?;
-                    info!("copying album {:?}", album.title);
+                    debug!("copying album {:?}", album.title);
                     let res = do_one_album(
                         &pool,
                         &immich_client,
@@ -808,16 +810,70 @@ async fn main() -> Result<()> {
             .await;
         all_albums_pb.set_message("Copying shared albums");
         let shared_albums_results = stream::iter(shared_albums_stream)
-            .buffer_unordered(2)
+            .buffer_unordered(1)
             .collect::<Vec<_>>()
             .await;
-        println!(
+        info!(
             "shared albums: {:?}",
             shared_albums_results
                 .into_iter()
                 .filter(|x| x.is_err())
                 .collect::<Vec<_>>()
         );
+    }
+    if let Some(n) = args.items {
+        let items_pb = multi.add(ProgressBar::new(1));
+        items_pb.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+            )
+            .unwrap()
+            .progress_chars("##-"),
+        );
+        items_pb.set_message("Listing all media items");
+
+        let items_stream = gphoto_client
+            .media_items_stream()
+            .take(n)
+            .map(|media_item| {
+                let pb = items_pb.clone();
+                pb.set_length(pb.length().unwrap() + 1);
+                let pool = pool.clone();
+                let immich_client = immich_client.clone();
+                async move {
+                    let item = media_item?;
+                    let res = link_item(&pool, &immich_client, &item).await;
+                    pb.inc(1);
+                    res
+                }
+            })
+            .collect::<Vec<_>>()
+            .await;
+        items_pb.set_message("linking items");
+        let res = stream::iter(items_stream)
+            .buffer_unordered(10)
+            .collect::<Vec<_>>()
+            .await;
+        let num_err = res.iter().filter(|r| r.is_err()).count();
+
+        let mut ress: HashMap<_, usize> = HashMap::new();
+        res.into_iter()
+            .filter_map(|r| match r {
+                Ok(l) => Some(l),
+                Err(_) => None,
+            })
+            .map(|res| match res {
+                LookupResult::FoundUnique(_) => {
+                    LookupResult::FoundUnique(ImmichItemId("_".to_string()))
+                }
+                LookupResult::MatchedUnique(_) => {
+                    LookupResult::MatchedUnique(ImmichItemId("_".to_string()))
+                }
+                _ => res.clone(),
+            })
+            .for_each(|anon_res| *ress.entry(anon_res).or_default() += 1);
+        info!("matching results: {:?}", ress);
+        info!("num errors: {}", num_err);
     }
     Ok(())
 }
