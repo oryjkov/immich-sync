@@ -60,6 +60,9 @@ struct Args {
 
     #[arg(long, default_value = None)]
     items: Option<usize>,
+
+    #[arg(long, default_value_t = false)]
+    early_exit: bool,
 }
 
 #[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
@@ -813,29 +816,41 @@ async fn main() -> Result<()> {
             .await;
             all_albums_pb.inc(1);
             // Early exit if no NotFound items were encountered.
-            if let Ok(link_items) = &res {
-                if link_items
-                    .iter()
-                    .filter(|x| match x.link_type {
-                        LookupResult::NotFound => true,
-                        _ => false,
-                    })
-                    .count()
-                    == 0
-                {
-                    info!("An album with no unseen items encountered, stopping");
-                    break;
+            if args.early_exit {
+                if let Ok(link_items) = &res {
+                    if link_items
+                        .iter()
+                        .filter(|x| match x.link_type {
+                            LookupResult::NotFound => true,
+                            _ => false,
+                        })
+                        .count()
+                        == 0
+                    {
+                        info!("An album with no unseen items encountered, stopping");
+                        break;
+                    }
                 }
             }
             shared_albums_results.push(res);
         }
         let errors = shared_albums_results
-            .into_iter()
+            .iter()
             .filter(|x| x.is_err())
             .collect::<Vec<_>>();
         if errors.len() > 0 {
             error!("shared albums errors: {:?}", errors);
         }
+        let ok_res = shared_albums_results
+            .into_iter()
+            .filter_map(|r| match r {
+                Ok(l) => Some(l),
+                Err(_) => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        let ress = group_items(ok_res.iter());
+        info!("result from linking all shared albums items: {:?}", ress);
     }
     if let Some(n) = args.items {
         let items_pb = multi.add(ProgressBar::new(0));

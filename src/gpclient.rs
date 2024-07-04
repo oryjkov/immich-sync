@@ -184,7 +184,6 @@ impl GPClient {
                 match r.shared_albums {
                     Some(albums) => {
                         for album in albums {
-                            info!("album {:?}, {:?}", album.title, album.product_url);
                             yield album;
                         }
                     }
