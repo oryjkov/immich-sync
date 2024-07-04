@@ -139,6 +139,18 @@ pub fn compare_metadata(a: &ImageData, b: &ImageData) -> bool {
         }
     }
 
+    if a.video.is_some() {
+        let a = a.video.unwrap();
+        let b = b.video.unwrap();
+
+        if cmp_h(a.camera_make, b.camera_make) {
+            return false;
+        }
+        if cmp_h(a.camera_model, b.camera_model) {
+            return false;
+        }
+    }
+
     true
 }
 
