@@ -318,11 +318,13 @@ pub async fn get_auth(client_secret: &str, auth_file: &str) -> anyhow::Result<()
 
     let (code, state) = {
         // A very naive implementation of the redirect server.
-        let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+        let listener = TcpListener::bind("0.0.0.0:8080").unwrap();
 
         // The server will terminate itself after collecting the first code.
         let Some(mut stream) = listener.incoming().flatten().next() else {
-            panic!("listener terminated without accepting a connection");
+            return Err(anyhow!(
+                "listener terminated without accepting a connection"
+            ));
         };
 
         let mut reader = BufReader::new(&stream);
@@ -337,13 +339,13 @@ pub async fn get_auth(client_secret: &str, auth_file: &str) -> anyhow::Result<()
             .query_pairs()
             .find(|(key, _)| key == "code")
             .map(|(_, code)| AuthorizationCode::new(code.into_owned()))
-            .unwrap();
+            .with_context(|| format!("failed to extract code from the url"))?;
 
         let state = url
             .query_pairs()
             .find(|(key, _)| key == "state")
             .map(|(_, state)| CsrfToken::new(state.into_owned()))
-            .unwrap();
+            .with_context(|| format!("failed to extract state from the url"))?;
 
         let message = "Go back to your terminal :)";
         let response = format!(
@@ -375,6 +377,6 @@ pub async fn get_auth(client_secret: &str, auth_file: &str) -> anyhow::Result<()
 
     let token_ser = serde_json::to_string(&token_response)?;
     fs::write(auth_file, &token_ser)?;
-    println!("auth token saved to {}", auth_file);
+    info!("auth token saved to {}", auth_file);
     Ok(())
 }
