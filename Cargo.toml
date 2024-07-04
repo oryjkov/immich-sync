@@ -21,7 +21,7 @@ path = "src/link/main.rs"
 [dependencies]
 dotenvy = "0.15.7"
 immich-api = {path = "immich-api/generated"}
-gphotos-api = {path = "photos-api/generated"}
+gphotos-api = {path = "gphotos-api/generated"}
 tokio = { version = "1", features = ["full"] }
 oauth2 = "5.0.0-alpha.4"
 anyhow = "1.0.86"
