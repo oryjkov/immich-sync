@@ -5,6 +5,7 @@ use colored::Colorize;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
 use dotenvy::dotenv;
+use futures::pin_mut;
 use futures::stream;
 use futures::StreamExt;
 use gphotos_api::models::MediaItem;
@@ -388,10 +389,7 @@ async fn link_album(
         .or_else(|| m.get(&name_nfc))
     {
         Some(immich_id) => Ok(Some(immich_id.clone())),
-        None => {
-            print!("{:?}: ", album_title);
-            Ok(None)
-        }
+        None => Ok(None),
     }
 }
 
@@ -574,6 +572,10 @@ async fn create_linked_album(
     gphoto_id: &GPhotoAlbumId,
     title: &str,
 ) -> Result<ImmichAlbumId> {
+    if immich_client.read_only {
+        debug!("not creating immich album {title:?} when read-only");
+        return Ok(ImmichAlbumId("dummy read=only album".to_string()));
+    }
     let req = models::CreateAlbumDto {
         album_name: title.to_string(),
         asset_ids: Some(vec![]),
@@ -684,8 +686,12 @@ async fn do_one_album(
         &album_title,
     )
     .await?;
-    pb.set_message(format!("{:?}: copying album items", album_title));
-    copy_all_to_album(&immich_client, cop, &immich_album_id, &linked_items, pb).await?;
+    if !immich_client.read_only {
+        pb.set_message(format!("{:?}: copying album items", album_title));
+        copy_all_to_album(&immich_client, cop, &immich_album_id, &linked_items, pb).await?;
+    } else {
+        debug!("skipping copy when read-only");
+    }
     Ok(linked_items)
 }
 
@@ -761,7 +767,7 @@ async fn main() -> Result<()> {
             .get_album(&gphoto_album_id)
             .await
             .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
-        let linked_items = do_one_album(
+        let _ = do_one_album(
             &pool,
             &immich_client,
             &gphoto_client,
@@ -778,7 +784,7 @@ async fn main() -> Result<()> {
         // download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
     }
     if args.all_shared {
-        let all_albums_pb = multi.add(ProgressBar::new(1));
+        let all_albums_pb = multi.add(ProgressBar::new(0));
         all_albums_pb.set_style(
             ProgressStyle::with_template(
                 "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
@@ -786,43 +792,43 @@ async fn main() -> Result<()> {
             .unwrap()
             .progress_chars("##-"),
         );
-        all_albums_pb.set_message("Listing shared albums");
+        all_albums_pb.set_message("Progress in albums");
 
+        let mut shared_albums_results = vec![];
         let shared_albums_stream = gphoto_client.shared_albums_stream();
-        let shared_albums_stream = shared_albums_stream
-            .map(|album_or| {
-                let pb = all_albums_pb.clone();
-                pb.set_length(pb.length().unwrap() + 1);
-                let pool = pool.clone();
-                let immich_client = immich_client.clone();
-                let gphoto_client = gphoto_client.clone();
-                let cop = cop.clone();
-                let multi = multi.clone();
-                let immich_albums = immich_albums.clone();
-                async move {
-                    let album = album_or?;
-                    debug!("copying album {:?}", album.title);
-                    let res = do_one_album(
-                        &pool,
-                        &immich_client,
-                        &gphoto_client,
-                        cop,
-                        album,
-                        &immich_albums,
-                        multi,
-                    )
-                    .await;
-                    pb.inc(1);
-                    res
+        pin_mut!(shared_albums_stream);
+        while let Some(album_or) = shared_albums_stream.next().await {
+            let album = album_or?;
+            all_albums_pb.set_length(all_albums_pb.length().unwrap() + 1);
+            debug!("copying album {:?}", album.title);
+            let res = do_one_album(
+                &pool,
+                &immich_client,
+                &gphoto_client,
+                cop.clone(),
+                album,
+                &immich_albums,
+                multi.clone(),
+            )
+            .await;
+            all_albums_pb.inc(1);
+            // Early exit if no NotFound items were encountered.
+            if let Ok(link_items) = &res {
+                if link_items
+                    .iter()
+                    .filter(|x| match x.link_type {
+                        LookupResult::NotFound => true,
+                        _ => false,
+                    })
+                    .count()
+                    == 0
+                {
+                    info!("An album with no unseen items encountered, stopping");
+                    break;
                 }
-            })
-            .collect::<Vec<_>>()
-            .await;
-        all_albums_pb.set_message("Copying shared albums");
-        let shared_albums_results = stream::iter(shared_albums_stream)
-            .buffer_unordered(1)
-            .collect::<Vec<_>>()
-            .await;
+            }
+            shared_albums_results.push(res);
+        }
         let errors = shared_albums_results
             .into_iter()
             .filter(|x| x.is_err())
@@ -832,7 +838,7 @@ async fn main() -> Result<()> {
         }
     }
     if let Some(n) = args.items {
-        let items_pb = multi.add(ProgressBar::new(1));
+        let items_pb = multi.add(ProgressBar::new(0));
         items_pb.set_style(
             ProgressStyle::with_template(
                 "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
