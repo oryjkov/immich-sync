@@ -269,11 +269,13 @@ async fn link_album_items(
     pool: &Pool<Sqlite>,
     immich_client: &ImmichClient,
     gphoto_client: &GPClient,
-    gphoto_album_id: &GPhotoAlbumId,
-    album_name: &str,
+    album_metadata: gphotos_api::models::Album,
 ) -> Result<Vec<LinkedItem>> {
+    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.ok_or(anyhow!("missing id"))?);
+    let album_title: String = album_metadata.title.unwrap_or("<No title>".to_string());
+
     let gphoto_items = gphoto_client
-        .album_items_stream(gphoto_album_id)
+        .album_items_stream(&gphoto_album_id)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -313,7 +315,11 @@ async fn link_album_items(
         })
         .collect::<Vec<_>>();
     let ress = group_items(ok_res.iter());
-    info!("result from linking album items {album_name}: {:?}", ress);
+    info!(
+        "linking {album_title}({}): {:?}",
+        album_metadata.product_url.unwrap_or("no_url!".to_string()),
+        ress
+    );
 
     Ok(ok_res)
 }
@@ -639,10 +645,11 @@ async fn do_one_album(
     immich_albums: &[(String, ImmichAlbumId)],
     multi: MultiProgress,
 ) -> Result<Vec<LinkedItem>> {
-    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.ok_or(anyhow!("missing id"))?);
+    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.clone().ok_or(anyhow!("missing id"))?);
     let pb = multi.add(ProgressBar::new(
         album_metadata
             .media_items_count
+            .clone()
             .unwrap_or_default()
             .parse()
             .unwrap_or_default(),
@@ -655,7 +662,10 @@ async fn do_one_album(
         .progress_chars("##-"),
     );
 
-    let album_title: String = album_metadata.title.unwrap_or("<No title>".to_string());
+    let album_title: String = album_metadata
+        .title
+        .clone()
+        .unwrap_or("<No title>".to_string());
     pb.set_message(format!("{:?}: finding immich album", album_title));
 
     let immich_album_id = if let Some(immich_album_id) =
@@ -687,14 +697,7 @@ async fn do_one_album(
     };
     pb.set_message(format!("{:?}: linking album items", album_title));
     // Get the list of all media items in the gphoto album.
-    let linked_items = link_album_items(
-        pool,
-        immich_client,
-        gphoto_client,
-        &gphoto_album_id,
-        &album_title,
-    )
-    .await?;
+    let linked_items = link_album_items(pool, immich_client, gphoto_client, album_metadata).await?;
     if !immich_client.read_only {
         pb.set_message(format!("{:?}: copying album items", album_title));
         copy_all_to_album(&immich_client, cop, &immich_album_id, &linked_items, pb).await?;
