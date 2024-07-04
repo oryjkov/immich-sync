@@ -6,10 +6,6 @@ edition = "2021"
 [lib]
 name = "lib"
 
-[[bin]]
-name = "link"
-path = "src/link/main.rs"
-
 [dependencies]
 dotenvy = "0.15.7"
 immich-api = {path = "immich-api/generated"}
