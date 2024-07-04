@@ -886,7 +886,19 @@ async fn main() -> Result<()> {
             .flatten()
             .collect::<Vec<_>>();
         let ress = group_items(ok_res.iter());
-        info!("result from linking all shared albums items: {:?}", ress);
+        info!("linking all shared albums items: {:?}", ress);
+        for r in ok_res {
+            match r.link_type {
+                LookupResult::NotFound => {
+                    info!(
+                        "NotFound: {}, {}",
+                        r.gphoto_item.filename.unwrap_or("no_filename>".to_string()),
+                        r.gphoto_item.product_url.unwrap_or("no_url".to_string())
+                    );
+                }
+                _ => {}
+            }
+        }
     }
     if let Some(n) = args.items {
         let items_pb = multi.add(ProgressBar::new(0));
