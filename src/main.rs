@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
 use clap::Parser;
 use colored::Colorize;
 use crypto::digest::Digest;
@@ -18,15 +17,14 @@ use lib::coalescing_worker::CoalescingWorker;
 use lib::gpclient::get_auth;
 use lib::gpclient::GPClient;
 use lib::immich_client::ImmichClient;
+use lib::match_metadata::{compare_metadata, ImageData};
 use lib::types::*;
 use log::{debug, error, info, warn};
-use serde::Deserialize;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use std::env;
 use std::hash::Hash;
-use std::mem::swap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_normalization::UnicodeNormalization;
@@ -69,123 +67,6 @@ struct Args {
 
     #[arg(long, default_value = "auth_token.json")]
     auth_token: String,
-}
-
-#[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
-#[serde(rename_all = "camelCase")]
-struct VideoMetadata {
-    camera_make: Option<String>,
-    camera_model: Option<String>,
-}
-
-#[derive(Debug, Deserialize, PartialEq, PartialOrd, Default, Clone)]
-#[serde(rename_all = "camelCase")]
-struct PhotoMetadata {
-    camera_make: Option<String>,
-    camera_model: Option<String>,
-    focal_length: Option<f64>,
-    aperture_f_number: Option<f64>,
-    iso_equivalent: Option<u32>,
-    #[serde(default, deserialize_with = "deserialize_exposure_time")]
-    exposure_time: Option<u64>,
-}
-fn deserialize_exposure_time<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: Option<String> = Option::deserialize(deserializer)?;
-    if let Some(exp_s) = s {
-        let s = exp_s
-            .trim_end_matches('s')
-            .parse::<f64>()
-            .map_err(serde::de::Error::custom)?;
-        Ok(Some((s * 1e6).round() as u64))
-    } else {
-        Ok(None)
-    }
-}
-fn deserialize_creation_time<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: Option<String> = Option::deserialize(deserializer)?;
-    if let Some(date_str) = s {
-        DateTime::parse_from_rfc3339(&date_str)
-            .map(|dt| Some(dt.with_timezone(&Utc)))
-            .map_err(serde::de::Error::custom)
-    } else {
-        Ok(None)
-    }
-}
-#[derive(Debug, Deserialize, PartialEq, PartialOrd, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ImageData {
-    #[serde(default, deserialize_with = "deserialize_creation_time")]
-    creation_time: Option<DateTime<Utc>>,
-    width: Option<String>,
-    height: Option<String>,
-    photo: Option<PhotoMetadata>,
-    video: Option<VideoMetadata>,
-}
-
-impl From<models::AssetResponseDto> for ImageData {
-    fn from(value: models::AssetResponseDto) -> ImageData {
-        let exif = &value.exif_info;
-        let exposure_time = exif
-            .as_ref()
-            .and_then(|exif| exif.exposure_time.clone().flatten())
-            .map(|s| {
-                let p = s.split('/').collect::<Vec<_>>();
-                if p.len() == 1 {
-                    (p[0].parse::<f64>().unwrap() * 1e6).round() as u64
-                } else if p.len() == 2 {
-                    ((p[0].parse::<f64>().unwrap() / p[1].parse::<f64>().unwrap()) * 1e6).round()
-                        as u64
-                } else {
-                    panic!("strange input for exposure time: {:?}", s);
-                }
-            });
-        ImageData {
-            creation_time: Some(
-                DateTime::parse_from_rfc3339(&value.file_created_at)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap(),
-            ),
-            width: exif.as_ref().and_then(|exif| {
-                exif.exif_image_width
-                    .flatten()
-                    .map(|f| format!("{}", f as i64))
-            }),
-            height: exif.as_ref().and_then(|exif| {
-                exif.exif_image_height
-                    .flatten()
-                    .map(|f| format!("{}", f as i64))
-            }),
-            photo: if value.r#type == models::AssetTypeEnum::Image {
-                Some(PhotoMetadata {
-                    camera_make: exif.as_ref().and_then(|exif| exif.make.clone().flatten()),
-                    camera_model: exif.as_ref().and_then(|exif| exif.model.clone().flatten()),
-                    aperture_f_number: exif.as_ref().and_then(|exif| exif.f_number.flatten()),
-                    focal_length: exif.as_ref().and_then(|exif| exif.focal_length.flatten()),
-                    iso_equivalent: exif
-                        .as_ref()
-                        .and_then(|exif| exif.iso.flatten().map(|x| x as u32)),
-                    exposure_time,
-                    ..Default::default()
-                })
-            } else {
-                None
-            },
-            video: if value.r#type == models::AssetTypeEnum::Video {
-                Some(VideoMetadata {
-                    camera_make: exif.as_ref().and_then(|exif| exif.make.clone().flatten()),
-                    camera_model: exif.as_ref().and_then(|exif| exif.model.clone().flatten()),
-                })
-            } else {
-                None
-            },
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -240,7 +121,7 @@ async fn link_item(
     for immich_item in &res.assets.items {
         let immich_metadata = ImageData::from(immich_item.clone());
 
-        if match_metadata(&gphoto_metadata, &immich_metadata) {
+        if compare_metadata(&gphoto_metadata, &immich_metadata) {
             rv = match rv {
                 LookupResult::MatchedUnique(_) => LookupResult::MatchedMultiple,
                 _ => LookupResult::MatchedUnique(ImmichItemId(immich_item.id.clone())),
@@ -249,8 +130,11 @@ async fn link_item(
             debug!("{}: No metadata match!", filename.yellow());
             debug!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
             debug!("{} {:?}", "immich metadata:".green(), immich_metadata);
-            debug!("raw gphoto metadata: {:?}", metadata);
-            debug!("raw immich metadata: {:?}", immich_item);
+            debug!("raw gphoto metadata: {}", metadata);
+            debug!(
+                "raw immich metadata: {}",
+                serde_json::to_string(&immich_item).unwrap()
+            );
         }
     }
     Ok(rv)
@@ -313,42 +197,6 @@ async fn link_album_items(
             Err(_) => None,
         })
         .collect::<Vec<_>>())
-}
-
-fn match_metadata(gphoto_metadata: &ImageData, immich_metadata: &ImageData) -> bool {
-    let mut gphoto_metadata = gphoto_metadata.clone();
-    let mut immich_metadata = immich_metadata.clone();
-    let mut immich_metadata_flipped = immich_metadata.clone();
-    swap(
-        &mut immich_metadata_flipped.width,
-        &mut immich_metadata_flipped.height,
-    );
-    // Immich sometimes has empty strings for make/model.
-    for m in vec![&mut gphoto_metadata, &mut immich_metadata] {
-        m.photo.as_mut().map(|x| {
-            if x.camera_make == Some("".to_string()) {
-                x.camera_make = None
-            }
-        });
-        m.photo.as_mut().map(|x| {
-            if x.camera_model == Some("".to_string()) {
-                x.camera_model = None
-            }
-        });
-    }
-
-    if gphoto_metadata.video.is_some() && immich_metadata.video.is_some() {
-        // Immich has problems extracting some of the video metadata.
-        gphoto_metadata.video = None;
-        immich_metadata.video = None;
-        return gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped;
-    }
-
-    if gphoto_metadata == immich_metadata || gphoto_metadata == immich_metadata_flipped {
-        return true;
-    } else {
-        return false;
-    }
 }
 
 // Goes through all of the albums in gphotos that pass the filter f and are not linked with
@@ -464,7 +312,7 @@ async fn copy_all_to_album(
     let mut work = vec![];
     for linked_item in linked_items {
         match &linked_item.link_type {
-            LookupResult::NotFound => {
+            LookupResult::NotFound | LookupResult::FoundMultiple | LookupResult::FoundUnique(_) => {
                 info!("Will copy item {:?}", linked_item);
                 work.push(linked_item.gphoto_item.clone());
             }
