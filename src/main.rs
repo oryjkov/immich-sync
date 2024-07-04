@@ -943,6 +943,9 @@ fn group_items<'a>(items: impl Iterator<Item = &'a LinkedItem>) -> HashMap<Looku
             LookupResult::FoundUnique(_) => {
                 LookupResult::FoundUnique(ImmichItemId("_".to_string()))
             }
+            LookupResult::MatchedUniqueDB(_) => {
+                LookupResult::MatchedUniqueDB(ImmichItemId("_".to_string()))
+            }
             LookupResult::MatchedUnique(_) => {
                 LookupResult::MatchedUnique(ImmichItemId("_".to_string()))
             }
