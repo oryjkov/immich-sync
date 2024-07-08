@@ -95,7 +95,7 @@ pub fn compare_metadata(a: &ImageData, b: &ImageData) -> bool {
     let mut b = b.clone();
 
     if cmp_h(a.creation_time, b.creation_time) {
-        println!("creation: {:?} {:?}", a.creation_time, b.creation_time);
+        // println!("creation: {:?} {:?}", a.creation_time, b.creation_time);
         return false;
     }
     // allow for flips, for some reason immich and gphoto like to flip
@@ -105,11 +105,11 @@ pub fn compare_metadata(a: &ImageData, b: &ImageData) -> bool {
         }
     }
     if cmp_h(a.width, b.width) {
-        println!("width");
+        // println!("width");
         return false;
     }
     if cmp_h(a.height, b.height) {
-        println!("height");
+        // println!("height");
         return false;
     }
     if (a.photo.is_some() && b.photo.is_none()) || (b.photo.is_some() && a.photo.is_none()) {
