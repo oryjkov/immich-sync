@@ -350,10 +350,19 @@ async fn copy_all_to_album(
                 work.push(linked_item.gphoto_item.clone());
             }
             _ => {
-                debug!("Assuming item already exists in gphotos, skipping it");
+                // Assuming item already exists in gphotos, skipping it
                 continue;
             }
         }
+    }
+    if immich_client.read_only {
+        debug!("skipping copy when read-only");
+        (*STATS
+            .lock()
+            .unwrap()
+            .entry("dry_run_items_uploaded")
+            .or_default()) += work.len();
+        return Ok(());
     }
     pb.inc((linked_items.len() - work.len()) as u64);
     let z = stream::iter(work)
@@ -400,6 +409,11 @@ async fn copy_all_to_album(
     if n > 0 {
         if immich_client.read_only {
             warn!("immich: add {:?} to album {}", result, immich_album_id.0);
+            (*STATS
+                .lock()
+                .unwrap()
+                .entry("dry_run_items_added")
+                .or_default()) += n;
         } else {
             let res = albums_api::add_assets_to_album(
                 &immich_client.get_config(),
@@ -592,12 +606,8 @@ async fn do_one_album(
         immich_album_id,
         ress
     );
-    if !immich_client.read_only {
-        pb.set_message(format!("{:?}: copying album items", album_title));
-        copy_all_to_album(&immich_client, cop, &immich_album_id, &linked_items, pb).await?;
-    } else {
-        debug!("skipping copy when read-only");
-    }
+    pb.set_message(format!("{:?}: copying album items", album_title));
+    copy_all_to_album(&immich_client, cop, &immich_album_id, &linked_items, pb).await?;
     Ok(linked_items)
 }
 
