@@ -278,6 +278,15 @@ mod tests {
             .into();
         assert_eq!(i.photo.as_ref().unwrap().camera_make, None);
         assert_eq!(i.photo.as_ref().unwrap().camera_model, None);
+    }
+
+    #[test]
+    fn test_lax_time_match() {
+        // only one of the times matches.
+        let immich_metadata = r#"{"checksum":"/S+LG4j0jYDdQHJb4YfjrB6apjk=","deviceAssetId":"10784","deviceId":"6baab4b466900b9a65c66d93933952a5b7c9b003a499ac6a9f01e31a14bb19c4","duplicateId":null,"duration":"0:00:00.00000","exifInfo":{"city":null,"country":null,"dateTimeOriginal":"2024-07-08T18:03:51.000Z","description":"","exifImageHeight":3840.0,"exifImageWidth":2160.0,"exposureTime":null,"fNumber":null,"fileSizeInByte":3757423,"focalLength":null,"iso":null,"latitude":null,"lensModel":null,"longitude":null,"make":"","model":"","modifyDate":"2024-07-08T20:03:31.000Z","orientation":null,"projectionType":null,"state":null,"timeZone":null},"fileCreatedAt":"2024-07-08T18:03:51.000Z","fileModifiedAt":"2024-07-08T18:03:31.000Z","hasMetadata":true,"id":"c969cef6-8b30-4a64-8207-f65504a63782","isArchived":false,"isFavorite":false,"isOffline":false,"isTrashed":false,"libraryId":null,"livePhotoVideoId":null,"localDateTime":"2024-07-08T18:03:51.000Z","originalFileName":"1720461810927.jpg","originalMimeType":"image/jpeg","originalPath":"upload/upload/4f13d54e-b06a-48dc-8f7e-1d47fffe1425/c7/dc/c7dc4d5a-bf91-4795-b6eb-0340e0f8f6dd.jpg","ownerId":"4f13d54e-b06a-48dc-8f7e-1d47fffe1425","people":[],"resized":true,"stackCount":null,"thumbhash":"3MYJTAi69nZ3ZXSYund3cFcGVw==","type":"IMAGE","updatedAt":"2024-07-08T18:28:15.670Z"}"#;
+        let i: ImageData = serde_json::from_str::<AssetResponseDto>(immich_metadata)
+            .unwrap()
+            .into();
 
         let gphoto_metadata =
             r#"{"creationTime":"2024-07-08T18:03:31Z","width":"2160","height":"3840","photo":{}}"#;
