@@ -558,7 +558,7 @@ async fn do_one_album(
 
     let ress = group_items(linked_items.iter());
     info!(
-        "linked gphoto {} to immich {}, results: {:?}",
+        "linked gphoto album {} to immich {}, results: {:?}",
         album_metadata
             .product_url
             .clone()
