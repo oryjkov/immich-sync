@@ -138,7 +138,7 @@ async fn link_item(
                 _ => LookupResult::MatchedUnique(ImmichItemId(immich_item.id.clone())),
             };
         } else {
-            debug!("{}: No metadata match!", filename.yellow());
+            debug!("{}: No metadata match! gphoto_id: {}", filename.yellow(), gphoto_id);
             debug!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
             debug!("{} {:?}", "immich metadata:".green(), immich_metadata);
             debug!(
