@@ -345,7 +345,7 @@ async fn copy_all_to_album(
     let mut work = vec![];
     for linked_item in linked_items {
         match &linked_item.link_type {
-            LookupResult::NotFound | LookupResult::FoundMultiple | LookupResult::FoundUnique(_) => {
+            LookupResult::NotFound | LookupResult::FoundMultiple => {
                 info!("Will copy item {:?}", linked_item);
                 work.push(linked_item.gphoto_item.clone());
             }
