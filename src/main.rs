@@ -29,41 +29,54 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_normalization::UnicodeNormalization;
 
+/// Import google photo data into Immich.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
+    /// Immich API url, should normally include "/api" at the end.
     #[arg(long)]
     immich_url: String,
 
+    /// Local database, should be persisted between runs. Back it up with the rest of immich data.
     #[arg(long, default_value = "sqlite.db")]
     db: String,
 
+    /// Id of the google photo album to sync.
     #[arg(long, default_value = None)]
     gphoto_album_id: Option<String>,
 
+    /// Set to process all shared gphoto albums that the user is part of.
     #[arg(long, default_value = None)]
     all_shared: bool,
-
-    #[arg(long, default_value = "client-secret.json")]
-    client_secret: String,
-
-    #[arg(long, default_value_t = 10)]
-    download_concurrency: usize,
-
-    #[arg(long, default_value_t = false)]
-    read_only: bool,
-
-    #[arg(long, default_value = None)]
-    items: Option<usize>,
-
+    /// Goes together with --all-shared. If set, will exit as soon as an album with no unseen items
+    /// is encountered.
     #[arg(long, default_value_t = false)]
     early_exit: bool,
 
-    #[arg(long, default_value = ".env")]
-    immich_auth: String,
+    /// Google Photo API client ID.
+    #[arg(long, default_value = "client-secret.json")]
+    client_secret: String,
 
+    /// Google photo API token. Will be created if does not exist. Creation requires user
+    /// interaction via a local web server that runs on http://localhost:8080.
     #[arg(long, default_value = "auth_token.json")]
     auth_token: String,
+
+    /// Max media items to download from gphoto concurrently.
+    #[arg(long, default_value_t = 10)]
+    download_concurrency: usize,
+
+    /// Do not make any changes to Immich or the local db.
+    #[arg(long, default_value_t = false)]
+    read_only: bool,
+
+    /// If set, will list up to this many media items from google photos and import them.
+    #[arg(long, default_value = None)]
+    items: Option<usize>,
+
+    // File with the Immich API token.
+    #[arg(long, default_value = ".env")]
+    immich_auth: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
