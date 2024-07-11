@@ -47,7 +47,8 @@ struct Args {
     gphoto_album_id: Option<String>,
 
     // #[arg(long, value_parser = parse_opt_usize)]
-    /// Set to process all shared gphoto albums that the user is part of.
+    /// Set to process all shared gphoto albums that the user is part of. If a value is given, then
+    /// it is interpreted as usize limiting num of shared albums processed.
     #[arg(long, value_name = "shared_albums", action = ArgAction::Set)]
     shared_albums: Option<Option<String>>,
     /// Goes together with --shared-albums. If set, will exit as soon as an album with no unseen items
@@ -79,14 +80,6 @@ struct Args {
     // File with the Immich API token.
     #[arg(long, default_value = ".env")]
     immich_auth: String,
-}
-fn parse_opt_usize(s: &str) -> Result<usize, anyhow::Error> {
-    if s.is_ascii() {
-        Ok(usize::MAX)
-    } else {
-        s.parse()
-            .with_context(|| format!("failed to parse flag value: {:?}", s))
-    }
 }
 
 lazy_static! {
