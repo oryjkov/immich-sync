@@ -115,7 +115,13 @@ async fn link_item(
         .as_ref()
         .ok_or(anyhow!("missing metadata"))?
         .as_ref()
-        .try_into()?;
+        .try_into()
+        .with_context(|| {
+            format!(
+                "while converting {}",
+                serde_json::to_string(gphoto_item.media_metadata.as_ref().unwrap()).unwrap()
+            )
+        })?;
 
     let search_req = models::MetadataSearchDto {
         original_file_name: Some(filename.to_string()),
@@ -138,7 +144,11 @@ async fn link_item(
                 _ => LookupResult::MatchedUnique(ImmichItemId(immich_item.id.clone())),
             };
         } else {
-            debug!("{}: No metadata match! {}", filename.yellow(), gphoto_id);
+            debug!(
+                "{}: No metadata match! gphoto_id: {}",
+                filename.yellow(),
+                gphoto_id
+            );
             debug!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
             debug!("{} {:?}", "immich metadata:".green(), immich_metadata);
             debug!(
