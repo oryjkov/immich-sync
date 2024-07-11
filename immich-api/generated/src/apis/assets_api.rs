@@ -675,7 +675,7 @@ pub async fn play_asset_video(
 pub async fn replace_asset(
     configuration: &configuration::Configuration,
     id: &str,
-    asset_data: std::path::PathBuf,
+    _asset_data: std::path::PathBuf,
     device_asset_id: &str,
     device_id: &str,
     file_created_at: String,
@@ -960,7 +960,7 @@ pub async fn upload_asset(
     is_offline: Option<bool>,
     is_visible: Option<bool>,
     live_photo_video_id: Option<&str>,
-    sidecar_data: Option<std::path::PathBuf>,
+    _sidecar_data: Option<std::path::PathBuf>,
 ) -> Result<models::AssetMediaResponseDto, Error<UploadAssetError>> {
     let local_var_configuration = configuration;
 

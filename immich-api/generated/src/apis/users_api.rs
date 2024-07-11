@@ -79,7 +79,7 @@ pub enum UpdateMyUserError {
 }
 
 
-pub async fn create_profile_image(configuration: &configuration::Configuration, file: std::path::PathBuf) -> Result<models::CreateProfileImageResponseDto, Error<CreateProfileImageError>> {
+pub async fn create_profile_image(configuration: &configuration::Configuration, _file: std::path::PathBuf) -> Result<models::CreateProfileImageResponseDto, Error<CreateProfileImageError>> {
     let local_var_configuration = configuration;
 
     let local_var_client = &local_var_configuration.client;
@@ -101,7 +101,7 @@ pub async fn create_profile_image(configuration: &configuration::Configuration, 
     if let Some(ref local_var_token) = local_var_configuration.bearer_access_token {
         local_var_req_builder = local_var_req_builder.bearer_auth(local_var_token.to_owned());
     };
-    let mut local_var_form = reqwest::multipart::Form::new();
+    let local_var_form = reqwest::multipart::Form::new();
     // TODO: support file upload for 'file' parameter
     local_var_req_builder = local_var_req_builder.multipart(local_var_form);
 
