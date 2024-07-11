@@ -1,3 +1,4 @@
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use immich_api::models;
 use serde::Deserialize;
@@ -74,6 +75,13 @@ pub struct ImageData {
     height: Option<f64>,
     photo: Option<PhotoMetadata>,
     video: Option<VideoMetadata>,
+}
+impl TryFrom<&gphotos_api::models::MediaItemMediaMetadata> for ImageData {
+    type Error = anyhow::Error;
+    fn try_from(value: &gphotos_api::models::MediaItemMediaMetadata) -> Result<Self, Self::Error> {
+        let s = serde_json::to_string(&value)?;
+        serde_json::from_str(&s).with_context(|| format!("via json conversion failed"))
+    }
 }
 
 fn cmp_h<X: PartialEq>(a: Option<X>, b: Option<X>) -> bool {

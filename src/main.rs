@@ -89,9 +89,6 @@ async fn link_item(
 ) -> Result<LookupResult> {
     let gphoto_id = GPhotoItemId(gphoto_item.id.as_ref().unwrap().clone());
     let filename = gphoto_item.filename.as_ref().unwrap();
-    // TODO: get rid of this string intermediate conversion.
-    let metadata = gphoto_item.media_metadata.as_ref().unwrap();
-    let metadata = serde_json::to_string(&metadata).unwrap();
 
     let local_match = sqlx::query(r#"SELECT immich_id FROM item_item_links WHERE gphoto_id = $1"#)
         .bind(&gphoto_id.0)
@@ -103,8 +100,12 @@ async fn link_item(
         )));
     }
 
-    let gphoto_metadata: ImageData = serde_json::from_str(&metadata)
-        .with_context(|| format!("failed to parse gphoto metadata"))?;
+    let gphoto_metadata: ImageData = gphoto_item
+        .media_metadata
+        .as_ref()
+        .ok_or(anyhow!("missing metadata"))?
+        .as_ref()
+        .try_into()?;
 
     let search_req = models::MetadataSearchDto {
         original_file_name: Some(filename.to_string()),
@@ -130,11 +131,11 @@ async fn link_item(
             debug!("{}: No metadata match!", filename.yellow());
             debug!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
             debug!("{} {:?}", "immich metadata:".green(), immich_metadata);
-            debug!("raw gphoto metadata: {}", metadata);
             debug!(
-                "raw immich metadata: {}",
-                serde_json::to_string(&immich_item).unwrap()
+                "raw gphoto metadata: {:?}",
+                gphoto_item.media_metadata.as_ref().unwrap()
             );
+            debug!("raw immich metadata: {:?}", &immich_item);
         }
     }
     Ok(rv)
