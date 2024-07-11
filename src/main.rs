@@ -142,10 +142,13 @@ async fn link_item(
             debug!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
             debug!("{} {:?}", "immich metadata:".green(), immich_metadata);
             debug!(
-                "raw gphoto metadata: {:?}",
-                gphoto_item.media_metadata.as_ref().unwrap()
+                "raw gphoto metadata: {}",
+                serde_json::to_string(gphoto_item.media_metadata.as_ref().unwrap()).unwrap()
             );
-            debug!("raw immich metadata: {:?}", &immich_item);
+            debug!(
+                "raw immich metadata: {}",
+                serde_json::to_string(&immich_item).unwrap()
+            )
         }
     }
     Ok(rv)
