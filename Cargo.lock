@@ -979,6 +979,7 @@ dependencies = [
  "indicatif",
  "indicatif-log-bridge",
  "itertools",
+ "lazy_static",
  "log",
  "oauth2",
  "pin-project",

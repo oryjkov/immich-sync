@@ -13,6 +13,7 @@ use immich_api::apis::configuration;
 use immich_api::apis::search_api;
 use immich_api::models;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use lazy_static::lazy_static;
 use lib::coalescing_worker::CoalescingWorker;
 use lib::gpclient::get_auth;
 use lib::gpclient::GPClient;
@@ -25,7 +26,7 @@ use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use std::env;
 use std::hash::Hash;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_normalization::UnicodeNormalization;
 
@@ -79,6 +80,11 @@ struct Args {
     immich_auth: String,
 }
 
+lazy_static! {
+    static ref STATS: Arc<Mutex<HashMap<&'static str, usize>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 enum LookupResult {
     NotFound,                      // Filename is not found in immich
@@ -130,6 +136,7 @@ async fn link_item(
     };
     let mut rv = LookupResult::NotFound;
     let res = search_api::search_metadata(&immich_client.get_config(), search_req).await?;
+    (*STATS.lock().unwrap().entry("item_searched").or_default()) += 1;
     if res.assets.items.len() == 1 {
         rv = LookupResult::FoundUnique(ImmichItemId(res.assets.items[0].id.clone()));
     } else if res.assets.items.len() > 1 {
@@ -387,7 +394,8 @@ async fn copy_all_to_album(
         .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
         .collect::<Vec<_>>();
 
-    if result.len() > 0 {
+    let n = result.len();
+    if n > 0 {
         if immich_client.read_only {
             warn!("immich: add {:?} to album {}", result, immich_album_id.0);
         } else {
@@ -399,6 +407,7 @@ async fn copy_all_to_album(
             )
             .await
             .with_context(|| format!("failed to add items to immich album {immich_album_id}"))?;
+            (*STATS.lock().unwrap().entry("items_added").or_default()) += n;
             debug!("add to album result: {res:?}");
         }
     }
@@ -463,6 +472,7 @@ async fn download_and_upload(
     )
     .await
     .with_context(|| format!("upload_asset to immich failed"))?;
+    (*STATS.lock().unwrap().entry("items_uploaded").or_default()) += 1;
     debug!("upload result: {:?}", res);
     sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id) VALUES ($1, $2)"#)
         .bind(&gphoto_item.id.as_ref().unwrap())
@@ -498,6 +508,7 @@ async fn create_linked_album(
     )
     .await
     .with_context(|| format!("failed to create an immich album with title {title:?}"))?;
+    (*STATS.lock().unwrap().entry("albums_created").or_default()) += 1;
     let immich_album_id = ImmichAlbumId(res.id);
 
     let mut tx = pool.begin().await?;
@@ -850,6 +861,7 @@ async fn main() -> Result<()> {
         }));
         info!("matching results: {:?}", ress);
     }
+    println!("stats: {:?}", STATS.lock().unwrap());
     Ok(())
 }
 
