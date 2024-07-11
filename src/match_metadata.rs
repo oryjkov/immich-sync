@@ -106,7 +106,6 @@ pub fn compare_metadata(a: &ImageData, b: &ImageData) -> bool {
     let mut has_match = false;
     for t_a in &a.all_times {
         for t_b in &b.all_times {
-            println!("comparing {:?} {:?}", t_a, t_b);
             if t_a == t_b {
                 has_match = true;
                 break;
