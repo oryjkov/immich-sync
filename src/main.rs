@@ -42,12 +42,9 @@ struct Args {
     gphoto_album_id: Option<String>,
 
     #[arg(long, default_value = None)]
-    gphoto_item_id: Option<String>,
-
-    #[arg(long, default_value = None)]
     all_shared: bool,
 
-    #[arg(long)]
+    #[arg(long, default_value = "client-secret.json")]
     client_secret: String,
 
     #[arg(long, default_value_t = 10)]
@@ -703,11 +700,6 @@ async fn main() -> Result<()> {
             multi.clone(),
         )
         .await?;
-    }
-    if let Some(gphoto_item_id) = args.gphoto_item_id {
-        todo!("{}", gphoto_item_id);
-        // let gphoto_item_id = GPhotoItemId(gphoto_item_id);
-        // download_and_upload(&pool, &api_config, &gphoto_client, &gphoto_item_id).await?;
     }
     if args.all_shared {
         let all_albums_pb = multi.add(ProgressBar::new(0));

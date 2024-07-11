@@ -1,97 +1,101 @@
 # immich-sync: Sync Google Photo content to Immich
 
-The goal of this project is to mirror the content of one's Google Photo account into a personal
-Immich server.
+## Project Goal
 
-I wanted to find a way to rely on Google Photos as little as possible and keep all of my photos
-locally, however most of my friends are using Google Photos to create shared albums of our
-activities together and Immich is not a suitable replacement for this. Hence I wanted a tool that
-will mirror all the content accessible in my Google Photos account into immich. In particular this
-tool mirrors:
+The goal of this project is to mirror the content of a Google Photos account into a personal Immich
+server. This tool is designed to:
 
-- all albums:
-  - private,
-  - shared albums created by me,
-  - and shared albums that I'm a member of,
-- all media items (photos and videos) that are in those albums.
+- Reduce dependency on Google Photos by keeping all photos locally.
+- Mirror shared albums from Google Photos to Immich.
+
+Specifically, this tool mirrors:
+
+- All albums:
+  - Private
+  - Shared albums created by the user
+  - Shared albums where the user is a member
+- All media items (photos and videos) in those albums.
 
 ## Usage
 
-1. Get a Cloud API OAuth client ID.
-   [Instructions](https://github.com/NicholasDawson/ArchiverForGooglePhotos/blob/master/INSTRUCTIONS.md)
-1. Run the program for the first tima and create the authentication token. The tool assumes that
-   you're running locally and can access `localhost:8080`.
-1. Create an Immich API key and place it in a `.env` file, like: `IMMICH_API_KEY=...`
-1. Run in dry-run mode first to see what will be done.
-1. Run it for reals. This may copy photos from google photos to immich, create albums in immich and
-   add photos to albums in immich.
+1. **Get a Cloud API OAuth Client ID**
 
-## Principles of operation
+   - Follow the
+     [instructions](https://github.com/NicholasDawson/ArchiverForGooglePhotos/blob/master/INSTRUCTIONS.md)
+     to obtain a Cloud API OAuth client ID.
 
-### Album sync flow
+1. **Run the Program for the First Time**
 
-1. Start with a google photo album
-1. link it with an immich album
-   1. if not found in immich, then create an immich album
-   1. store the link in local db
-1. for every item in the gphoto album link it with an item in immich
-1. any items that were not linked (based on given strictness)
-   1. copy the item to immich
-   1. save the mapping between the two ids
-   1. add the item to the album in step 2.
+   - Execute the program to create the authentication token. Ensure that you are running locally and
+     can access `localhost:8080`.
 
-This program uses GPhoto API to get all of the media items and albums (again, shared and not
-shared), then goes through all albums and tries to title-match albums that exist in Immich. This
-mapping is then stored a local sqlite database (we map gphoto album id to immich album id, so
-renaming an album in either photo server won't affect it). Any gphoto albums that do not exist in
-immich are created there and we copy over all the associated media items.
+1. **Create an Immich API Key**
 
-Media items are mapped based on filename and metadata. This is not always unique, so it is possible
-that wrong photos will be added to albums and/or some photos will not be reuploaded. It is possible
-to tune this behaviour. However, for any media items that have been copied over, we preserve the
-mapping (again based on unique ids) in the local storage.
+   - Generate an API key in Immich.
+   - Place it in a `.env` file in the following format:
+     ```plaintext
+     IMMICH_API_KEY=your_api_key_here
+     ```
 
-At the moment no items are deleted from Immich so any deletions in GPhotos will not be reflected in
-immich.
+1. **Dry-Run Mode**
+
+   - Run the program in dry-run mode to see what actions will be performed without making any
+     changes.
+
+1. **Execute the Program**
+
+   - Run the program to actually sync photos from Google Photos to Immich, create albums, and add
+     photos to albums in Immich.
+
+1. **Run the import periodically**
+
+   - I've set up a daily import job to copy over all shared albums.
+
+## Principles of Operation
+
+### Album Sync Flow
+
+1. Start with a Google Photos album.
+1. Link it with an Immich album:
+   - If not found in Immich, create an Immich album.
+   - Store the album-album link in the local database.
+1. For every item in the Google Photos album, try to link it with an item in Immich.
+1. For any items not linked (based on given strictness):
+   - Copy the item to Immich.
+   - Save the mapping between the two IDs.
+   - Add the item to the album created in step 2.
 
 ### Syncing
 
-#### Media items
+#### Media Items
 
-Before copying items from Gphoto to Immich the tool tries to find if it is in Immich already. This
-is done using filename search and then some match. At the moment only filenames that are not found
-in Immich will be copied over.
+Before copying items from Google Photos to Immich, the tool checks if they are already in Immich
+using filename search and other matching criteria. Only filenames not found in Immich will be copied
+over.
 
-Any media items that was copied to Immich by this tool gets recorded in an internal database so that
-it does not need to be copied on future runs. We store mapping between the (persistent) gphotos item
-id and immich id.
+Any media item copied to Immich by this tool is recorded in an internal database to avoid
+duplication in future runs. The tool stores a mapping between the persistent Google Photos item ID
+and Immich ID.
 
 #### Albums
 
-Albums are matched only by Title. The tool unicode-normalizes the names and strips trailing
-whitespace before matching.
-
-Once a match is done the corresponding unique ids (gphoto and immich) is recorded in the internal
-db. (This is different from what is done when matching media items where we only record links when
-we create a new item in Immich.)
+Albums are matched only by title. The tool normalizes the names and strips trailing whitespace
+before matching. Once a match is found, the corresponding unique IDs (Google Photos and Immich) are
+recorded in the internal database.
 
 ### Notes
 
-#### Photo location
+#### Photo Location
 
-GPhoto API does not include photo location in EXIFs. Even for your own photos, or if the location
-sharing is enabled on the photo/album.
-[google issue](https://issuetracker.google.com/issues/80379228).
+The Google Photos API does not include photo location in EXIFs. This applies even to your own photos
+or if location sharing is enabled on the photo/album. More information can be found in this
+[Google issue](https://issuetracker.google.com/issues/80379228).
 
-Takeout dump includes photo locations, so it is necessary to import the google takeout to have
-location data on your photos.
+To include photo locations, it is necessary to import Google Takeout data. Unfortunately, there is
+no easy solution for shared photos.
 
-As for shared photos - I don't know of an easy solution :(
+#### API Limits
 
-#### API limits
-
-Google photo library limits to 10k API reqests per day and 75k media downloads per day (per client
-id).
-
-One could use different cloud project/client ids - it appears that item and album ids are preserved
-accross different clients.
+Google Photo Library imposes limits of 10,000 API requests per day and 75,000 media downloads per
+day (per client ID). Using different cloud project/client IDs may help, as item and album IDs are
+preserved across different clients.
