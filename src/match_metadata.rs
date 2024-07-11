@@ -192,8 +192,16 @@ impl From<models::AssetResponseDto> for ImageData {
                 .and_then(|exif| exif.exif_image_height.flatten()),
             photo: if value.r#type == models::AssetTypeEnum::Image {
                 Some(PhotoMetadata {
-                    camera_make: exif.as_ref().and_then(|exif| exif.make.clone().flatten()),
-                    camera_model: exif.as_ref().and_then(|exif| exif.model.clone().flatten()),
+                    camera_make: exif
+                        .as_ref()
+                        .and_then(|exif| exif.make.clone().flatten())
+                        .and_then(|x| if x == "" { None } else { Some(x) }),
+                    camera_model: exif.as_ref().and_then(|exif| {
+                        exif.model
+                            .clone()
+                            .flatten()
+                            .and_then(|x| if x == "" { None } else { Some(x) })
+                    }),
                     aperture_f_number: exif.as_ref().and_then(|exif| exif.f_number.flatten()),
                     focal_length: exif.as_ref().and_then(|exif| exif.focal_length.flatten()),
                     iso_equivalent: exif
@@ -219,9 +227,18 @@ impl From<models::AssetResponseDto> for ImageData {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use models::AssetResponseDto;
 
-    use super::*;
+    #[test]
+    fn test_from_immich_empty_camera_string() {
+        let immich_metadata = r#"{"checksum":"/S+LG4j0jYDdQHJb4YfjrB6apjk=","deviceAssetId":"10784","deviceId":"6baab4b466900b9a65c66d93933952a5b7c9b003a499ac6a9f01e31a14bb19c4","duplicateId":null,"duration":"0:00:00.00000","exifInfo":{"city":null,"country":null,"dateTimeOriginal":"2024-07-08T18:03:51.000Z","description":"","exifImageHeight":3840.0,"exifImageWidth":2160.0,"exposureTime":null,"fNumber":null,"fileSizeInByte":3757423,"focalLength":null,"iso":null,"latitude":null,"lensModel":null,"longitude":null,"make":"","model":"","modifyDate":"2024-07-08T20:03:31.000Z","orientation":null,"projectionType":null,"state":null,"timeZone":null},"fileCreatedAt":"2024-07-08T18:03:51.000Z","fileModifiedAt":"2024-07-08T18:03:31.000Z","hasMetadata":true,"id":"c969cef6-8b30-4a64-8207-f65504a63782","isArchived":false,"isFavorite":false,"isOffline":false,"isTrashed":false,"libraryId":null,"livePhotoVideoId":null,"localDateTime":"2024-07-08T18:03:51.000Z","originalFileName":"1720461810927.jpg","originalMimeType":"image/jpeg","originalPath":"upload/upload/4f13d54e-b06a-48dc-8f7e-1d47fffe1425/c7/dc/c7dc4d5a-bf91-4795-b6eb-0340e0f8f6dd.jpg","ownerId":"4f13d54e-b06a-48dc-8f7e-1d47fffe1425","people":[],"resized":true,"stackCount":null,"thumbhash":"3MYJTAi69nZ3ZXSYund3cFcGVw==","type":"IMAGE","updatedAt":"2024-07-08T18:28:15.670Z"}"#;
+        let immich_metadata: AssetResponseDto = serde_json::from_str(immich_metadata).unwrap();
+        let immich_metadata: ImageData = immich_metadata.into();
+        assert_eq!(immich_metadata.photo.as_ref().unwrap().camera_make, None);
+        assert_eq!(immich_metadata.photo.as_ref().unwrap().camera_model, None);
+    }
+
     #[test]
     fn test_same() {
         let gphoto_metadata = r#"{"creationTime":"2024-06-30T17:52:38Z","width":"720","height":"1280","video":{"fps":30.0,"status":"READY"}}"#;
