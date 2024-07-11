@@ -18,6 +18,14 @@ Specifically, this tool mirrors:
 
 ## Usage
 
+1. **Create an Immich API Key**
+
+   - Generate an API key in Immich.
+   - Place it in a `.env` file in the following format:
+     ```plaintext
+     IMMICH_API_KEY=your_api_key_here
+     ```
+
 1. **Get a Cloud API OAuth Client ID**
 
    - Follow the
@@ -29,27 +37,32 @@ Specifically, this tool mirrors:
    - Execute the program to create the authentication token. Ensure that you are running locally and
      can access `localhost:8080`.
 
-1. **Create an Immich API Key**
-
-   - Generate an API key in Immich.
-   - Place it in a `.env` file in the following format:
-     ```plaintext
-     IMMICH_API_KEY=your_api_key_here
-     ```
-
 1. **Dry-Run Mode**
 
    - Run the program in dry-run mode to see what actions will be performed without making any
      changes.
+   - The following will go through all shared albums and output what will be done. This may take a
+     while if you have many albums. Pass in `--early-exit` to stop as soon as an album is found that
+     does not have any unseen items.
 
-1. **Execute the Program**
+   ```shell
+    cargo run -- --immich-url=http://immich.server:2283/api --all-shared --read-only
+   ```
+
+1. **Initial import**
 
    - Run the program to actually sync photos from Google Photos to Immich, create albums, and add
      photos to albums in Immich.
 
+   ```shell
+    cargo run -- --immich-url=http://immich.server:2283/api --all-shared
+   ```
+
 1. **Run the import periodically**
 
    - I've set up a daily import job to copy over all shared albums.
+   - It runs with `--early-exit --all-shared` argument to only pick up newly changed albums. This
+     works because GPhoto API returns newly changed albums first.
 
 ## Principles of Operation
 
