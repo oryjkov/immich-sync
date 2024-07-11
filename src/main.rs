@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use colored::Colorize;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
@@ -46,10 +46,11 @@ struct Args {
     #[arg(long, default_value = None)]
     gphoto_album_id: Option<String>,
 
+    // #[arg(long, value_parser = parse_opt_usize)]
     /// Set to process all shared gphoto albums that the user is part of.
-    #[arg(long, default_value = None)]
-    all_shared: bool,
-    /// Goes together with --all-shared. If set, will exit as soon as an album with no unseen items
+    #[arg(long, value_name = "shared_albums", action = ArgAction::Set)]
+    shared_albums: Option<Option<String>>,
+    /// Goes together with --shared-albums. If set, will exit as soon as an album with no unseen items
     /// is encountered.
     #[arg(long, default_value_t = false)]
     early_exit: bool,
@@ -78,6 +79,14 @@ struct Args {
     // File with the Immich API token.
     #[arg(long, default_value = ".env")]
     immich_auth: String,
+}
+fn parse_opt_usize(s: &str) -> Result<usize, anyhow::Error> {
+    if s.is_ascii() {
+        Ok(usize::MAX)
+    } else {
+        s.parse()
+            .with_context(|| format!("failed to parse flag value: {:?}", s))
+    }
 }
 
 lazy_static! {
@@ -618,6 +627,12 @@ async fn main() -> Result<()> {
         .unwrap();
     let args = Args::parse();
 
+    let num_shared = match args.shared_albums {
+        Some(Some(value)) => value.parse::<usize>().ok(),
+        Some(None) => Some(usize::MAX),
+        None => None,
+    };
+
     let _ = dotenvy::from_filename(args.immich_auth)
         .inspect_err(|err| warn!("failed to read .env file: {:?}", err));
 
@@ -738,7 +753,7 @@ async fn main() -> Result<()> {
         )
         .await?;
     }
-    if args.all_shared {
+    if let Some(mut num_shared) = num_shared {
         let all_albums_pb = multi.add(ProgressBar::new(0));
         all_albums_pb.set_style(
             ProgressStyle::with_template(
@@ -785,6 +800,10 @@ async fn main() -> Result<()> {
                 }
             }
             shared_albums_results.push(res);
+            num_shared -= 1;
+            if num_shared == 0 {
+                break;
+            }
         }
         let errors = shared_albums_results
             .iter()

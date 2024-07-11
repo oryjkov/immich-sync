@@ -55,13 +55,13 @@ Specifically, this tool mirrors:
      photos to albums in Immich.
 
    ```shell
-    cargo run -- --immich-url=http://immich.server:2283/api --all-shared
+    cargo run -- --immich-url=http://immich.server:2283/api --shared-albums
    ```
 
 1. **Run the import periodically**
 
    - I've set up a daily import job to copy over all shared albums.
-   - It runs with `--early-exit --all-shared` argument to only pick up newly changed albums. This
+   - It runs with `--early-exit --shared-albums` argument to only pick up newly changed albums. This
      works because GPhoto API returns newly changed albums first.
 
 ## Principles of Operation
