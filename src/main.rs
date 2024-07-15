@@ -343,6 +343,10 @@ async fn copy_all_to_album(
     linked_items: &[LinkedItem],
     pb: ProgressBar,
 ) -> Result<()> {
+    // List of items that are already in immich to (re-)add to this album. These are inserted into
+    // the db too.
+    let mut existing_items_to_add = vec![];
+
     let mut work = vec![];
     for linked_item in linked_items {
         match &linked_item.link_type {
@@ -350,19 +354,52 @@ async fn copy_all_to_album(
                 info!("Will copy item {:?}", linked_item);
                 work.push(linked_item.gphoto_item.clone());
             }
+            LookupResult::MatchedUniqueDB(immich_id) => {
+                existing_items_to_add.push(immich_id.clone())
+            }
+            LookupResult::MatchedUnique(immich_id) => {
+                if !immich_client.read_only {
+                    let add_res = sqlx::query(
+                        r#"
+INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time)
+VALUES ($1, $2, $3, $4)"#,
+                    )
+                    .bind(linked_item.gphoto_item.id.as_ref().unwrap())
+                    .bind(&immich_id.0)
+                    .bind("MatchedUnique")
+                    .bind(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64,
+                    )
+                    .execute(pool)
+                    .await;
+
+                    if add_res.is_err() {
+                        error!(
+                            "failed to add the link {} {} to db",
+                            linked_item.gphoto_item.id.as_ref().unwrap(),
+                            &immich_id.0
+                        );
+                        continue;
+                    } else {
+                        existing_items_to_add.push(immich_id.clone())
+                    }
+                } else {
+                    existing_items_to_add.push(immich_id.clone())
+                }
+            }
             _ => {
                 // Assuming item already exists in gphotos, skipping it
                 continue;
             }
         }
     }
+    (*STATS.lock().unwrap().entry("records_added").or_default()) += existing_items_to_add.len();
     if immich_client.read_only {
         debug!("skipping copy when read-only");
-        (*STATS
-            .lock()
-            .unwrap()
-            .entry("dry_run_items_uploaded")
-            .or_default()) += work.len();
+        (*STATS.lock().unwrap().entry("items_uploaded").or_default()) += work.len();
         return Ok(());
     }
     pb.inc((linked_items.len() - work.len()) as u64);
@@ -380,67 +417,24 @@ async fn copy_all_to_album(
         .buffer_unordered(100)
         .collect::<Vec<_>>()
         .await;
-    let mut result = copy_results
+    let result = copy_results
         .into_iter()
         .filter_map(|r| match r {
             Ok(immich_id) => Some(immich_id),
-            Err(e) => {
-                error!("copy failed {:?}", e);
+            Err(ref e) => {
+                error!("copy failed on {:?}, error: {:?}", r, e);
                 None
             }
         })
-        .collect::<Vec<_>>();
-    debug!("uploaded {} items", result.len());
-
-    // Add existing items to the album too, record the ones that are not in our db.
-    for linked_item in linked_items {
-        result.push(match &linked_item.link_type {
-            // Re-do album association anyways since we are certain of the mapping here.
-            LookupResult::MatchedUniqueDB(immich_id) => immich_id.clone(),
-            LookupResult::MatchedUnique(immich_id) => {
-                if !immich_client.read_only {
-                    let add_res = sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time) VALUES ($1, $2, $3, $4)"#)
-                        .bind(linked_item.gphoto_item.id.as_ref().unwrap())
-                        .bind(&immich_id.0)
-                        .bind("MatchedUnique")
-                        .bind(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs() as i64,
-                        )
-                        .execute(pool)
-                        .await;
-
-                    if add_res.is_err() {
-                        error!(
-                            "failed to add the link {} {} to db",
-                            linked_item.gphoto_item.id.as_ref().unwrap(),
-                            &immich_id.0
-                        );
-                    }
-                }
-                immich_id.clone()
-            },
-            _ => {
-                continue;
-            }
-        });
-    }
-    let result = result
-        .into_iter()
+        .chain(existing_items_to_add.into_iter())
         .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
         .collect::<Vec<_>>();
+    debug!("uploaded {} items", result.len());
 
     let n = result.len();
     if n > 0 {
         if immich_client.read_only {
             warn!("immich: add {:?} to album {}", result, immich_album_id.0);
-            (*STATS
-                .lock()
-                .unwrap()
-                .entry("dry_run_items_added")
-                .or_default()) += n;
         } else {
             let res = albums_api::add_assets_to_album(
                 &immich_client.get_config(),
@@ -450,9 +444,9 @@ async fn copy_all_to_album(
             )
             .await
             .with_context(|| format!("failed to add items to immich album {immich_album_id}"))?;
-            (*STATS.lock().unwrap().entry("items_added").or_default()) += n;
             debug!("add to album result: {res:?}");
         }
+        (*STATS.lock().unwrap().entry("items_added").or_default()) += n;
     }
     Ok(())
 }
