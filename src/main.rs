@@ -346,6 +346,7 @@ async fn copy_all_to_album(
     // List of items that are already in immich to (re-)add to this album. These are inserted into
     // the db too.
     let mut existing_items_to_add = vec![];
+    let mut records_added = 0;
 
     let mut work = vec![];
     for linked_item in linked_items {
@@ -384,10 +385,12 @@ VALUES ($1, $2, $3, $4)"#,
                         );
                         continue;
                     } else {
-                        existing_items_to_add.push(immich_id.clone())
+                        existing_items_to_add.push(immich_id.clone());
+                        records_added += 1;
                     }
                 } else {
-                    existing_items_to_add.push(immich_id.clone())
+                    existing_items_to_add.push(immich_id.clone());
+                    records_added += 1;
                 }
             }
             _ => {
@@ -396,7 +399,7 @@ VALUES ($1, $2, $3, $4)"#,
             }
         }
     }
-    (*STATS.lock().unwrap().entry("records_added").or_default()) += existing_items_to_add.len();
+    (*STATS.lock().unwrap().entry("records_added").or_default()) += records_added;
     if immich_client.read_only {
         debug!("skipping copy when read-only");
         (*STATS.lock().unwrap().entry("items_uploaded").or_default()) += work.len();
