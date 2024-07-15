@@ -490,9 +490,16 @@ async fn download_and_upload(
     .with_context(|| format!("upload_asset to immich failed"))?;
     (*STATS.lock().unwrap().entry("items_uploaded").or_default()) += 1;
     debug!("upload result: {:?}", res);
-    sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id) VALUES ($1, $2)"#)
+    sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time) VALUES ($1, $2, $3, $4)"#)
         .bind(&gphoto_item.id.as_ref().unwrap())
         .bind(&res.id)
+        .bind("MatchedUniqueDB")
+        .bind(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        )
         .execute(pool)
         .await
         .with_context(|| format!("failed to save item_item link to the db"))?;
@@ -540,12 +547,18 @@ async fn create_linked_album(
         .await?;
     sqlx::query(
         r#"
-            INSERT INTO album_album_links (gphoto_id, immich_id) VALUES
-                    ($1, $2)
+            INSERT INTO album_album_links (gphoto_id, immich_id, insert_time) VALUES
+                    ($1, $2, $3)
             "#,
     )
     .bind(&gphoto_id.0)
     .bind(&immich_album_id.0)
+    .bind(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    )
     .execute(&mut *tx)
     .await?;
     tx.commit().await.with_context(|| {
@@ -620,6 +633,32 @@ impl Hash for WrappedMediaItem {
     }
 }
 
+async fn check_and_update_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let r = sqlx::query(r"SELECT insert_time FROM item_item_links LIMIT 1")
+        .fetch_optional(pool)
+        .await;
+
+    if r.is_err() {
+        warn!("need to update the db schema");
+        let update_schema = r#"
+ALTER TABLE "album_album_links" ADD COLUMN insert_time INTEGER DEFAULT NULL;
+UPDATE "album_album_links" SET insert_time = unixepoch(CURRENT_TIMESTAMP);
+
+ALTER TABLE "item_item_links" ADD COLUMN link_type TEXT DEFAULT NULL;
+UPDATE "item_item_links" SET link_type = "MatchedUniqueDB";
+
+ALTER TABLE "item_item_links" ADD COLUMN insert_time INTEGER DEFAULT NULL;
+UPDATE "item_item_links" SET insert_time = unixepoch(CURRENT_TIMESTAMP);
+"#;
+
+        sqlx::raw_sql(update_schema)
+            .execute(pool)
+            .await
+            .with_context(|| format!("failed to update the new db schema. oops"))?;
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let logger =
@@ -663,6 +702,7 @@ async fn main() -> Result<()> {
             .await
             .with_context(|| format!("failed to create new db schema"))?;
     }
+    check_and_update_schema(&pool).await?;
 
     let api_key = env::vars()
         .find(|(k, _)| k == "IMMICH_API_KEY")
