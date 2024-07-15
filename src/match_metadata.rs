@@ -116,24 +116,26 @@ pub fn compare_metadata(a: &ImageData, b: &ImageData) -> bool {
         return false;
     }
 
-    // allow for flips, for some reason immich and gphoto like to flip
-    for x in [&mut a, &mut b] {
-        if x.width < x.height {
-            mem::swap(&mut x.width, &mut x.height);
-        }
-    }
-    if cmp_h(a.width, b.width) {
-        // println!("width");
-        return false;
-    }
-    if cmp_h(a.height, b.height) {
-        // println!("height");
-        return false;
-    }
     if (a.photo.is_some() && b.photo.is_none()) || (b.photo.is_some() && a.photo.is_none()) {
         return false;
     }
     if a.photo.is_some() {
+        // gphoto downsizes videos to 1080p, so only look at height and width on photos
+
+        // allow for flips, for some reason immich and gphoto like to flip
+        for x in [&mut a, &mut b] {
+            if x.width < x.height {
+                mem::swap(&mut x.width, &mut x.height);
+            }
+        }
+        if cmp_h(a.width, b.width) {
+            // println!("width");
+            return false;
+        }
+        if cmp_h(a.height, b.height) {
+            // println!("height");
+            return false;
+        }
         let a = a.photo.unwrap();
         let b = b.photo.unwrap();
 
@@ -336,5 +338,20 @@ mod tests {
             .into();
 
         assert!(!compare_metadata(&g, &i));
+    }
+    #[test]
+    fn test_video_ignores_height_width() {
+        let gphoto_metadata = r#"{"creationTime":"2024-07-14T14:44:38Z","width":"1080","height":"1920","video":{"cameraMake":"Insta360","cameraModel":"One X2.VIDEO_NORMAL","fps":29.97002997002997,"status":"READY"}}"#;
+        let immich_metadata = r#"{"checksum":"VhKISX5gwfC4Ehp/48JgTBcyNNM=","deviceAssetId":"10804","deviceId":"6baab4b466900b9a65c66d93933952a5b7c9b003a499ac6a9f01e31a14bb19c4","duplicateId":null,"duration":"00:02:42.228","exifInfo":{"city":null,"country":null,"dateTimeOriginal":"2024-07-14T14:45:00.000Z","description":"","exifImageHeight":2560.0,"exifImageWidth":1440.0,"exposureTime":null,"fNumber":null,"fileSizeInByte":851900357,"focalLength":null,"iso":null,"latitude":null,"lensModel":null,"longitude":null,"make":"Insta360","model":"One X2.VIDEO_NORMAL","modifyDate":"2024-07-14T14:44:38.000Z","orientation":"1","projectionType":null,"state":null,"timeZone":"UTC"},"fileCreatedAt":"2024-07-14T14:45:00.000Z","fileModifiedAt":"2024-07-14T14:44:38.000Z","hasMetadata":true,"id":"2d06e4f8-6b18-4482-b826-c3042a6da0ad","isArchived":false,"isFavorite":false,"isOffline":false,"isTrashed":false,"libraryId":null,"livePhotoVideoId":null,"localDateTime":"2024-07-14T14:45:00.000Z","originalFileName":"20240714_163840_461.mp4","originalMimeType":"video/mp4","originalPath":"upload/upload/4f13d54e-b06a-48dc-8f7e-1d47fffe1425/d0/cc/d0cc1741-ae63-40c9-baaa-bcb1a7528294.mp4","ownerId":"4f13d54e-b06a-48dc-8f7e-1d47fffe1425","people":[],"resized":true,"stackCount":null,"thumbhash":"oOcVLAKF+HaIiIV3l3iGYDoFsw==","type":"VIDEO","updatedAt":"2024-07-14T14:53:52.066Z"}"#;
+        let g: ImageData =
+            (&serde_json::from_str::<gphotos_api::models::MediaItemMediaMetadata>(gphoto_metadata)
+                .unwrap())
+                .try_into()
+                .unwrap();
+        let i: ImageData = serde_json::from_str::<AssetResponseDto>(immich_metadata)
+            .unwrap()
+            .into();
+
+        assert!(compare_metadata(&g, &i));
     }
 }
