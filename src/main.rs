@@ -336,6 +336,7 @@ async fn save_album_link(
 // TODO: this is WIP.
 // TODO: which items to copy? NotFound only?
 async fn copy_all_to_album(
+    pool: &Pool<Sqlite>,
     immich_client: &ImmichClient,
     c: CoalescingWorker<WrappedMediaItem, ImmichItemId>,
     immich_album_id: &ImmichAlbumId,
@@ -365,7 +366,7 @@ async fn copy_all_to_album(
         return Ok(());
     }
     pb.inc((linked_items.len() - work.len()) as u64);
-    let z = stream::iter(work)
+    let copy_results = stream::iter(work)
         .map(|gphoto_item| {
             let pb = pb.clone();
             let c = c.clone();
@@ -375,11 +376,11 @@ async fn copy_all_to_album(
                 res
             }
         })
-        .buffer_unordered(100) // 100 is just a large number,
-        // concurrency is limited internally in the downloader.
+        // 100 is just a large number, concurrency is limited internally in the downloader.
+        .buffer_unordered(100)
         .collect::<Vec<_>>()
         .await;
-    let mut result = z
+    let mut result = copy_results
         .into_iter()
         .filter_map(|r| match r {
             Ok(immich_id) => Some(immich_id),
@@ -390,11 +391,37 @@ async fn copy_all_to_album(
         })
         .collect::<Vec<_>>();
     debug!("uploaded {} items", result.len());
+
+    // Add existing items to the album too, record the ones that are not in our db.
     for linked_item in linked_items {
         result.push(match &linked_item.link_type {
             // Re-do album association anyways since we are certain of the mapping here.
             LookupResult::MatchedUniqueDB(immich_id) => immich_id.clone(),
-            LookupResult::MatchedUnique(immich_id) => immich_id.clone(),
+            LookupResult::MatchedUnique(immich_id) => {
+                if !immich_client.read_only {
+                    let add_res = sqlx::query(r#"INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time) VALUES ($1, $2, $3, $4)"#)
+                        .bind(linked_item.gphoto_item.id.as_ref().unwrap())
+                        .bind(&immich_id.0)
+                        .bind("MatchedUnique")
+                        .bind(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs() as i64,
+                        )
+                        .execute(pool)
+                        .await;
+
+                    if add_res.is_err() {
+                        error!(
+                            "failed to add the link {} {} to db",
+                            linked_item.gphoto_item.id.as_ref().unwrap(),
+                            &immich_id.0
+                        );
+                    }
+                }
+                immich_id.clone()
+            },
             _ => {
                 continue;
             }
@@ -620,7 +647,15 @@ async fn do_one_album(
         ress
     );
     pb.set_message(format!("{:?}: copying album items", album_title));
-    copy_all_to_album(&immich_client, cop, &immich_album_id, &linked_items, pb).await?;
+    copy_all_to_album(
+        pool,
+        &immich_client,
+        cop,
+        &immich_album_id,
+        &linked_items,
+        pb,
+    )
+    .await?;
     Ok(linked_items)
 }
 
