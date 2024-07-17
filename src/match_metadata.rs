@@ -92,7 +92,7 @@ fn cmp_h<X: PartialEq>(a: Option<X>, b: Option<X>) -> bool {
     false
 }
 fn cmp_hf(a: Option<f64>, b: Option<f64>) -> bool {
-    if a.is_some() && b.is_some() && (a.unwrap() - b.unwrap()).abs() > 1e-2 {
+    if a.is_some() && b.is_some() && (a.unwrap() - b.unwrap()).abs() > 1e-1 {
         return true;
     }
     false
@@ -343,6 +343,21 @@ mod tests {
     fn test_video_ignores_height_width() {
         let gphoto_metadata = r#"{"creationTime":"2024-07-14T14:44:38Z","width":"1080","height":"1920","video":{"cameraMake":"Insta360","cameraModel":"One X2.VIDEO_NORMAL","fps":29.97002997002997,"status":"READY"}}"#;
         let immich_metadata = r#"{"checksum":"VhKISX5gwfC4Ehp/48JgTBcyNNM=","deviceAssetId":"10804","deviceId":"6baab4b466900b9a65c66d93933952a5b7c9b003a499ac6a9f01e31a14bb19c4","duplicateId":null,"duration":"00:02:42.228","exifInfo":{"city":null,"country":null,"dateTimeOriginal":"2024-07-14T14:45:00.000Z","description":"","exifImageHeight":2560.0,"exifImageWidth":1440.0,"exposureTime":null,"fNumber":null,"fileSizeInByte":851900357,"focalLength":null,"iso":null,"latitude":null,"lensModel":null,"longitude":null,"make":"Insta360","model":"One X2.VIDEO_NORMAL","modifyDate":"2024-07-14T14:44:38.000Z","orientation":"1","projectionType":null,"state":null,"timeZone":"UTC"},"fileCreatedAt":"2024-07-14T14:45:00.000Z","fileModifiedAt":"2024-07-14T14:44:38.000Z","hasMetadata":true,"id":"2d06e4f8-6b18-4482-b826-c3042a6da0ad","isArchived":false,"isFavorite":false,"isOffline":false,"isTrashed":false,"libraryId":null,"livePhotoVideoId":null,"localDateTime":"2024-07-14T14:45:00.000Z","originalFileName":"20240714_163840_461.mp4","originalMimeType":"video/mp4","originalPath":"upload/upload/4f13d54e-b06a-48dc-8f7e-1d47fffe1425/d0/cc/d0cc1741-ae63-40c9-baaa-bcb1a7528294.mp4","ownerId":"4f13d54e-b06a-48dc-8f7e-1d47fffe1425","people":[],"resized":true,"stackCount":null,"thumbhash":"oOcVLAKF+HaIiIV3l3iGYDoFsw==","type":"VIDEO","updatedAt":"2024-07-14T14:53:52.066Z"}"#;
+        let g: ImageData =
+            (&serde_json::from_str::<gphotos_api::models::MediaItemMediaMetadata>(gphoto_metadata)
+                .unwrap())
+                .try_into()
+                .unwrap();
+        let i: ImageData = serde_json::from_str::<AssetResponseDto>(immich_metadata)
+            .unwrap()
+            .into();
+
+        assert!(compare_metadata(&g, &i));
+    }
+    #[test]
+    fn test_should_match() {
+        let gphoto_metadata = r#"{"creationTime":"2024-06-27T19:35:56.496Z","width":"3072","height":"4080","photo":{"cameraMake":"Google","cameraModel":"Pixel 6","focalLength":6.81,"apertureFNumber":1.85,"isoEquivalent":104,"exposureTime":"0.041997s"}}"#;
+        let immich_metadata = r#"{"checksum":"lw5y6IsCo11RT8+dYgQmWrE+5QU=","deviceAssetId":"970e72e88b02a35d514fcf9d6204265ab13ee505","deviceId":"immich-sync","duplicateId":null,"duration":"0:00:00.00000","exifInfo":{"city":null,"country":null,"dateTimeOriginal":"2024-06-27T19:35:56.496Z","description":"","exifImageHeight":4080.0,"exifImageWidth":3072.0,"exposureTime":"1/24","fNumber":1.9,"fileSizeInByte":792315,"focalLength":6.81,"iso":104.0,"latitude":null,"lensModel":"Pixel 6 back camera 6.81mm f/1.85","longitude":null,"make":"Google","model":"Pixel 6","modifyDate":"2024-06-27T19:35:56.496Z","orientation":"1","projectionType":null,"state":null,"timeZone":"UTC+2"},"fileCreatedAt":"2024-06-27T19:35:56.496Z","fileModifiedAt":"2024-06-27T19:35:56.496Z","hasMetadata":true,"id":"e8fc8390-6512-436c-b407-945823c400e2","isArchived":false,"isFavorite":false,"isOffline":false,"isTrashed":false,"libraryId":null,"livePhotoVideoId":null,"localDateTime":"2024-06-27T21:35:56.496Z","originalFileName":"PXL_20240627_193556496.jpg","originalMimeType":"image/jpeg","originalPath":"upload/upload/fe5315c8-d1cd-4822-a3c9-1e00d244e71a/3c/63/3c63237e-fe75-4f75-857d-e2af4c151a40.jpg","ownerId":"fe5315c8-d1cd-4822-a3c9-1e00d244e71a","people":[],"resized":true,"stackCount":null,"thumbhash":"1icKDQZxiE+ImHbYdnmHeC+5zPas","type":"IMAGE","updatedAt":"2024-07-02T10:18:00.641Z"}"#;
         let g: ImageData =
             (&serde_json::from_str::<gphotos_api::models::MediaItemMediaMetadata>(gphoto_metadata)
                 .unwrap())
