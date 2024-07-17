@@ -321,6 +321,7 @@ async fn search(
 }
 
 async fn write(
+    multi: &MultiProgress,
     search_result: &SearchResult,
     scan_result: &ScanResult,
     pool: &Pool<Sqlite>,
@@ -363,72 +364,102 @@ async fn write(
         }
     }
 
-    let mut linked_items = HashMap::new();
-    for (gphoto_id, link) in &search_result.media_items {
-        match link {
-            ElementLinkResult::ExistsInDB(immich_id) => {
-                linked_items.insert(gphoto_id.clone(), immich_id.clone());
-            }
-            ElementLinkResult::Found(immich_id) => {
-                if immich_client.read_only {
-                    info!("will write item link {} <-> {}", gphoto_id, immich_id);
-                } else {
-                    let add_res = sqlx::query(
-                        r#"
+    let items_copy_pb = multi.add(ProgressBar::new(
+        search_result
+            .media_items
+            .iter()
+            .filter(|(_, x)| match x {
+                ElementLinkResult::CreateNew => true,
+                _ => false,
+            })
+            .count() as u64,
+    ));
+    items_copy_pb.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    items_copy_pb.set_message("Copying media items");
+
+    // Goes through media_items and performs all the actions to sync them to immich. As a result
+    // builds a map from GPhotoItemId to ImmichItemId (either new or existing).
+    let linked_items: HashMap<GPhotoItemId, ImmichItemId> =
+        stream::iter(search_result.media_items.iter().map(|(gphoto_id, link)| {
+            let pb = items_copy_pb.clone();
+            async move {
+                match link {
+                    ElementLinkResult::ExistsInDB(immich_id) => Some(immich_id.clone()),
+                    ElementLinkResult::Found(immich_id) => {
+                        if immich_client.read_only {
+                            info!("will write item link {} <-> {}", gphoto_id, immich_id);
+                        } else {
+                            let add_res = sqlx::query(
+                                r#"
 INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time)
 VALUES ($1, $2, $3, $4)"#,
-                    )
-                    .bind(&gphoto_id.0)
-                    .bind(&immich_id.0)
-                    .bind("MatchedUnique")
-                    .bind(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs() as i64,
-                    )
-                    .execute(pool)
-                    .await;
+                            )
+                            .bind(&gphoto_id.0)
+                            .bind(&immich_id.0)
+                            .bind("MatchedUnique")
+                            .bind(
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs() as i64,
+                            )
+                            .execute(pool)
+                            .await;
 
-                    if add_res.is_err() {
-                        error!("failed to add the link {} {} to db", gphoto_id, immich_id);
-                        continue;
-                    } else {
-                        linked_items.insert(gphoto_id.clone(), immich_id.clone());
+                            if add_res.is_err() {
+                                error!("failed to add the link {} {} to db", gphoto_id, immich_id);
+                                return None;
+                            }
+                        }
+                        Some(immich_id.clone())
+                    }
+                    ElementLinkResult::CreateNew => {
+                        let r = if immich_client.read_only {
+                            info!("will copy {} to immich", gphoto_id);
+                            Some(ImmichItemId("NEW_ITEM".to_string()))
+                        } else {
+                            download_and_upload(
+                                pool,
+                                immich_client,
+                                gphoto_client,
+                                scan_result.media_items.get(gphoto_id).unwrap(),
+                            )
+                            .await
+                            .ok()
+                        };
+                        pb.inc(1);
+                        r
+                    }
+                    ElementLinkResult::Unknown(message) => {
+                        if log_enabled!(Warn) {
+                            let metadata = scan_result.media_items.get(gphoto_id).unwrap();
+                            warn!(
+                                "don't know what to do with {} {}",
+                                metadata.filename.clone().unwrap_or_default(),
+                                metadata.product_url.clone().unwrap_or_default()
+                            );
+                            if !message.is_empty() {
+                                warn!("debug message: {}", message);
+                            }
+                        }
+                        None
                     }
                 }
-                linked_items.insert(gphoto_id.clone(), immich_id.clone());
+                .map(|l| (gphoto_id.clone(), l))
             }
-            ElementLinkResult::CreateNew => {
-                if immich_client.read_only {
-                    info!("will copy {} to immich", gphoto_id);
-                    linked_items.insert(gphoto_id.clone(), ImmichItemId("NEW_ITEM".to_string()));
-                } else {
-                    let immich_id = download_and_upload(
-                        pool,
-                        immich_client,
-                        gphoto_client,
-                        scan_result.media_items.get(gphoto_id).unwrap(),
-                    )
-                    .await?;
-                    linked_items.insert(gphoto_id.clone(), immich_id);
-                }
-            }
-            ElementLinkResult::Unknown(message) => {
-                if log_enabled!(Warn) {
-                    let metadata = scan_result.media_items.get(gphoto_id).unwrap();
-                    warn!(
-                        "don't know what to do with {} {}",
-                        metadata.filename.clone().unwrap_or_default(),
-                        metadata.product_url.clone().unwrap_or_default()
-                    );
-                    if !message.is_empty() {
-                        warn!("debug message: {}", message);
-                    }
-                }
-            }
-        }
-    }
+        }))
+        .buffer_unordered(10)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .filter_map(|x| x)
+        .collect();
 
     let immich_associations: HashMap<_, _> = scan_result
         .associations
@@ -442,29 +473,57 @@ VALUES ($1, $2, $3, $4)"#,
             Some((immich_album_id, immich_items))
         })
         .collect();
-    // linked_items.iter().map(|(gphoto_id, immich_id)|)
-    for (immich_album_id, immich_items) in immich_associations {
-        let immich_ids: Vec<_> = immich_items
-            .iter()
-            .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
-            .collect();
-        if immich_client.read_only {
-            info!(
-                "will add {} items to immich album {}",
-                immich_ids.len(),
-                immich_album_id,
-            );
-        } else {
-            albums_api::add_assets_to_album(
-                &(immich_client.get_config_for_writing()? as lib::immich_client::ApiConfigWrapper),
-                &immich_album_id.0,
-                models::BulkIdsDto { ids: immich_ids },
-                None,
-            )
-            .await
-            .with_context(|| format!("failed to add items to immich album {immich_album_id}"))?;
-        }
-    }
+
+    let albums_add_pb = multi.add(ProgressBar::new(search_result.albums.len() as u64));
+    albums_add_pb.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    albums_add_pb.set_message("Adding media items to albums");
+
+    // Associate all the items with corresponding immich albums.
+    stream::iter(
+        immich_associations
+            .into_iter()
+            .map(|(immich_album_id, immich_items)| {
+                let pb = albums_add_pb.clone();
+                let immich_ids: Vec<_> = immich_items
+                    .iter()
+                    .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
+                    .collect();
+                async move {
+                    if immich_client.read_only {
+                        info!(
+                            "will add {} items to immich album {}",
+                            immich_ids.len(),
+                            immich_album_id,
+                        );
+                    } else {
+                        let _ = albums_api::add_assets_to_album(
+                            &(immich_client.get_config_for_writing().unwrap()
+                                as lib::immich_client::ApiConfigWrapper),
+                            &immich_album_id.0,
+                            models::BulkIdsDto { ids: immich_ids },
+                            None,
+                        )
+                        .await
+                        .map_err(|e| {
+                            error!(
+                                "failed to add items to immich album {immich_album_id}: {:?}",
+                                e
+                            )
+                        });
+                        pb.inc(1);
+                    }
+                }
+            }),
+    )
+    .buffer_unordered(1)
+    .collect::<Vec<_>>()
+    .await;
     Ok(())
 }
 
@@ -915,6 +974,7 @@ async fn main() -> Result<()> {
     search_result.log_summary();
 
     write(
+        &multi,
         &search_result,
         &scan_result,
         &pool,
