@@ -6,6 +6,8 @@ use std::{
 
 use immich_api::apis::configuration::{ApiKey, Configuration};
 
+use crate::types::{ImmichAlbumId, ImmichItemId};
+
 // ImmichClient takes care of keeping a limited set of ImmichApi clients and
 // handing them out using ApiConfigWrapper objects.
 #[derive(Clone, Debug)]
@@ -13,6 +15,7 @@ pub struct ImmichClient {
     api_configs: Arc<Mutex<Vec<Box<Configuration>>>>,
     configs_empty: Arc<Condvar>,
     pub read_only: bool,
+    base_url: String,
 }
 
 pub struct ApiConfigWrapper<'a> {
@@ -55,7 +58,14 @@ impl ImmichClient {
             ])),
             configs_empty: Arc::new(Condvar::new()),
             read_only,
+            base_url: immich_url.strip_suffix("/api").unwrap().to_string(),
         }
+    }
+    pub fn item_url(&self, item_id: &ImmichItemId) -> String {
+        format!("{}/photos/{}", self.base_url, item_id.0)
+    }
+    pub fn album_url(&self, album_id: &ImmichAlbumId) -> String {
+        format!("{}/albums/{}", self.base_url, album_id.0)
     }
     pub fn get_config(&self) -> ApiConfigWrapper {
         let api_config = {

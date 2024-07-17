@@ -420,12 +420,19 @@ async fn write(
     let linked_items: HashMap<GPhotoItemId, ImmichItemId> =
         stream::iter(search_result.media_items.iter().map(|(gphoto_id, link)| {
             let pb = items_copy_pb.clone();
+            let metadata = scan_result.media_items.get(gphoto_id).unwrap();
+            let product_url = metadata.product_url.clone().unwrap_or_default();
+
             async move {
                 match link {
                     ElementLinkResult::ExistsInDB(immich_id) => Some(immich_id.clone()),
                     ElementLinkResult::Found(immich_id) => {
                         if immich_client.read_only {
-                            info!("will write item link {} <-> {}", gphoto_id, immich_id);
+                            info!(
+                                "will write item link {} <-> {}",
+                                product_url.red(),
+                                immich_client.item_url(immich_id).green()
+                            );
                         } else {
                             let add_res = sqlx::query(
                                 r#"
@@ -445,7 +452,10 @@ VALUES ($1, $2, $3, $4)"#,
                             .await;
 
                             if add_res.is_err() {
-                                error!("failed to add the link {} {} to db", gphoto_id, immich_id);
+                                error!(
+                                    "failed to add the link {} <-> {} to db",
+                                    gphoto_id, immich_id
+                                );
                                 return None;
                             }
                         }
@@ -453,28 +463,22 @@ VALUES ($1, $2, $3, $4)"#,
                     }
                     ElementLinkResult::CreateNew => {
                         let r = if immich_client.read_only {
-                            info!("will copy {} to immich", gphoto_id);
+                            info!("will copy {} to immich", product_url.red());
                             Some(ImmichItemId("NEW_ITEM".to_string()))
                         } else {
-                            download_and_upload(
-                                pool,
-                                immich_client,
-                                gphoto_client,
-                                scan_result.media_items.get(gphoto_id).unwrap(),
-                            )
-                            .await
-                            .ok()
+                            download_and_upload(pool, immich_client, gphoto_client, metadata)
+                                .await
+                                .ok()
                         };
                         pb.inc(1);
                         r
                     }
                     ElementLinkResult::Unknown(message) => {
                         if log_enabled!(Warn) {
-                            let metadata = scan_result.media_items.get(gphoto_id).unwrap();
                             warn!(
                                 "don't know what to do with {} {}",
-                                metadata.filename.clone().unwrap_or_default(),
-                                metadata.product_url.clone().unwrap_or_default()
+                                metadata.filename.clone().unwrap_or_default().yellow(),
+                                product_url.red()
                             );
                             if !message.is_empty() {
                                 warn!("debug message: {}", message);
