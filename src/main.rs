@@ -145,11 +145,12 @@ enum ElementLinkResult<LinkedType> {
 }
 
 async fn scan_one_album(
+    pool: &Pool<Sqlite>,
     gphoto_client: &GPClient,
     gphoto_album_id: GPhotoAlbumId,
     album: Album,
     result: &mut ScanResult,
-) -> Result<()> {
+) -> Result<bool> {
     let album_items = gphoto_client
         .album_items_stream(&gphoto_album_id)
         .collect::<Vec<_>>()
@@ -164,16 +165,33 @@ async fn scan_one_album(
         })
         .collect::<HashMap<_, _>>();
 
+    let mut new_items = false;
+    for (gphoto_id, _) in &album_items {
+        if sqlx::query(r#"SELECT immich_id FROM item_item_links WHERE gphoto_id = $1"#)
+            .bind(&gphoto_id.0)
+            .fetch_optional(pool)
+            .await?
+            .is_some()
+        {
+            new_items = true;
+            break;
+        }
+    }
     result.albums.insert(gphoto_album_id.clone(), album);
     result.associations.insert(
         gphoto_album_id.clone(),
         album_items.iter().map(|(k, _)| k.clone()).collect(),
     );
     result.media_items.extend(album_items);
-    Ok(())
+    Ok(new_items)
 }
 
-async fn scan(args: &Args, multi: &MultiProgress, gphoto_client: &GPClient) -> Result<ScanResult> {
+async fn scan(
+    pool: &Pool<Sqlite>,
+    args: &Args,
+    multi: &MultiProgress,
+    gphoto_client: &GPClient,
+) -> Result<ScanResult> {
     let mut result = ScanResult::default();
     // Go through gphoto API and pick what we're looking for.
     let num_shared = match args.shared_albums.as_ref() {
@@ -188,7 +206,14 @@ async fn scan(args: &Args, multi: &MultiProgress, gphoto_client: &GPClient) -> R
             .get_album(&gphoto_album_id)
             .await
             .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
-        scan_one_album(gphoto_client, gphoto_album_id, album_metadata, &mut result).await?;
+        scan_one_album(
+            pool,
+            gphoto_client,
+            gphoto_album_id,
+            album_metadata,
+            &mut result,
+        )
+        .await?;
     }
     if let Some(mut num_shared) = num_shared {
         let all_albums_pb = multi.add(ProgressBar::new(if num_shared == usize::MAX {
@@ -210,7 +235,8 @@ async fn scan(args: &Args, multi: &MultiProgress, gphoto_client: &GPClient) -> R
         while let Some(album_or) = shared_albums_stream.next().await {
             let album = album_or?;
             let gphoto_album_id = GPhotoAlbumId(album.id.clone().unwrap());
-            scan_one_album(gphoto_client, gphoto_album_id, album, &mut result).await?;
+            let new_items =
+                scan_one_album(pool, gphoto_client, gphoto_album_id, album, &mut result).await?;
 
             if num_shared == usize::MAX {
                 all_albums_pb.set_length(all_albums_pb.length().unwrap() + 1);
@@ -218,7 +244,7 @@ async fn scan(args: &Args, multi: &MultiProgress, gphoto_client: &GPClient) -> R
 
             all_albums_pb.inc(1);
             num_shared -= 1;
-            if num_shared == 0 {
+            if num_shared == 0 || (args.early_exit && !new_items) {
                 break;
             }
         }
@@ -975,7 +1001,7 @@ async fn main() -> Result<()> {
     }
     let gphoto_client = GPClient::new_from_file(&args.client_secret, &args.auth_token).await?;
 
-    let scan_result = scan(&args, &multi, &gphoto_client).await?;
+    let scan_result = scan(&pool, &args, &multi, &gphoto_client).await?;
     let search_result = search(&multi, &scan_result, &pool, &immich_client).await?;
     write(
         &multi,
