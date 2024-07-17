@@ -112,10 +112,10 @@ impl SearchResult {
         let mut items_summary: HashMap<String, usize> = HashMap::new();
         for (_, e) in &self.media_items {
             let group = match e {
-                ElementLinkResult::Unknown(_) => "skipped",
+                ElementLinkResult::Unknown(_) => "item skipped - no good match",
                 ElementLinkResult::Found(_) => "found metadata",
                 ElementLinkResult::ExistsInDB(_) => "found db",
-                ElementLinkResult::CreateNew => "create_new",
+                ElementLinkResult::CreateNew => "copy to immich",
             };
             *items_summary.entry(group.to_string()).or_default() += 1;
         }
@@ -125,7 +125,7 @@ impl SearchResult {
                 ElementLinkResult::Unknown(_) => "skipped",
                 ElementLinkResult::Found(_) => "found metadata",
                 ElementLinkResult::ExistsInDB(_) => "found db",
-                ElementLinkResult::CreateNew => "create_new",
+                ElementLinkResult::CreateNew => "create new",
             };
             *albums_summary.entry(group.to_string()).or_default() += 1;
         }
@@ -346,7 +346,13 @@ async fn write(
                 let album_metadata = scan_result.albums.get(gphoto_id).unwrap();
                 if immich_client.read_only {
                     info!("will have created album titled {:?}", album_metadata.title);
-                    linked_albums.insert(gphoto_id.clone(), ImmichAlbumId("NEW_ALBUM".to_string()));
+                    linked_albums.insert(
+                        gphoto_id.clone(),
+                        ImmichAlbumId(format!(
+                            "NEW_ALBUM:{}",
+                            album_metadata.product_url.clone().unwrap_or_default()
+                        )),
+                    );
                 } else {
                     let immich_id = create_linked_album(
                         pool,
@@ -970,14 +976,7 @@ async fn main() -> Result<()> {
     let gphoto_client = GPClient::new_from_file(&args.client_secret, &args.auth_token).await?;
 
     let scan_result = scan(&args, &multi, &gphoto_client).await?;
-    info!(
-        "scan result: media_items: {}, albums: {}",
-        scan_result.media_items.len(),
-        scan_result.albums.len()
-    );
     let search_result = search(&multi, &scan_result, &pool, &immich_client).await?;
-    search_result.log_summary();
-
     write(
         &multi,
         &search_result,
@@ -987,6 +986,13 @@ async fn main() -> Result<()> {
         &gphoto_client,
     )
     .await?;
+
+    info!(
+        "scan result: media_items: {}, albums: {}",
+        scan_result.media_items.len(),
+        scan_result.albums.len()
+    );
+    search_result.log_summary();
 
     println!("stats: {:?}", STATS.lock().unwrap());
     Ok(())
