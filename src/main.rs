@@ -4,9 +4,8 @@ use colored::Colorize;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
 use futures::pin_mut;
-use futures::stream;
 use futures::StreamExt;
-use gphotos_api::models::MediaItem;
+use gphotos_api::models::{Album, MediaItem};
 use immich_api::apis::albums_api;
 use immich_api::apis::assets_api;
 use immich_api::apis::configuration;
@@ -14,7 +13,6 @@ use immich_api::apis::search_api;
 use immich_api::models;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
-use lib::coalescing_worker::CoalescingWorker;
 use lib::gpclient::get_auth;
 use lib::gpclient::GPClient;
 use lib::immich_client::ImmichClient;
@@ -23,7 +21,7 @@ use lib::types::*;
 use log::{debug, error, info, warn};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
@@ -95,6 +93,302 @@ enum LookupResult {
     MatchedMultiple, // Metadata matched with multiple candidates
     MatchedUnique(ImmichItemId), // Metadata matched with exactly one candidate
     MatchedUniqueDB(ImmichItemId), // Matched an item from the local db.
+}
+
+#[derive(Debug, Default)]
+struct ScanResult {
+    media_items: HashMap<GPhotoItemId, MediaItem>,
+    albums: HashMap<GPhotoAlbumId, Album>,
+    associations: HashMap<GPhotoAlbumId, HashSet<GPhotoItemId>>,
+}
+#[derive(Debug, Default)]
+struct SearchResult {
+    // Link found in the DB
+    linked_items: HashMap<GPhotoItemId, ImmichItemId>,
+    // Linked by metadata, needs writing to the DB
+    newly_linked_items: HashMap<GPhotoItemId, ImmichItemId>,
+    // Link not found, will need to be copied.
+    unlinked_items: HashSet<GPhotoItemId>,
+    // Don't know what to do.
+    skipped_items: HashSet<GPhotoItemId>,
+
+    // Link found in the DB
+    linked_albums: HashMap<GPhotoAlbumId, ImmichAlbumId>,
+    // Linked by metadata, needs writing to the DB
+    newly_linked_albums: HashMap<GPhotoAlbumId, ImmichAlbumId>,
+    // Link not found, will need to be copied.
+    unlinked_albums: HashSet<GPhotoAlbumId>,
+    // Don't know what to do.
+    // skipped_albums: HashSet<GPhotoAlbumId>,
+}
+
+async fn scan_one_album(
+    gphoto_client: &GPClient,
+    gphoto_album_id: GPhotoAlbumId,
+    album: Album,
+    result: &mut ScanResult,
+) -> Result<()> {
+    let album_items = gphoto_client
+        .album_items_stream(&gphoto_album_id)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .filter_map(|item| match item {
+            Ok(item) => Some((GPhotoItemId(item.id.clone().unwrap()), item)),
+            Err(e) => {
+                error!("failed listing items: {e:?}");
+                None
+            }
+        })
+        .collect::<HashMap<_, _>>();
+
+    result.albums.insert(gphoto_album_id.clone(), album);
+    result.associations.insert(
+        gphoto_album_id.clone(),
+        album_items.iter().map(|(k, _)| k.clone()).collect(),
+    );
+    result.media_items.extend(album_items);
+    Ok(())
+}
+
+async fn scan(args: &Args, multi: &MultiProgress, gphoto_client: &GPClient) -> Result<ScanResult> {
+    let mut result = ScanResult::default();
+    // Go through gphoto API and pick what we're looking for.
+    let num_shared = match args.shared_albums.as_ref() {
+        Some(Some(value)) => value.parse::<usize>().ok(),
+        Some(None) => Some(usize::MAX),
+        None => None,
+    };
+
+    if let Some(gphoto_album_id) = args.gphoto_album_id.as_ref() {
+        let gphoto_album_id = GPhotoAlbumId(gphoto_album_id.clone());
+        let album_metadata = gphoto_client
+            .get_album(&gphoto_album_id)
+            .await
+            .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
+        scan_one_album(gphoto_client, gphoto_album_id, album_metadata, &mut result).await?;
+    }
+    if let Some(mut num_shared) = num_shared {
+        let all_albums_pb = multi.add(ProgressBar::new(0));
+        all_albums_pb.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+            )
+            .unwrap()
+            .progress_chars("##-"),
+        );
+        all_albums_pb.set_message("Scanning gphoto albums");
+
+        let shared_albums_stream = gphoto_client.shared_albums_stream();
+        pin_mut!(shared_albums_stream);
+        while let Some(album_or) = shared_albums_stream.next().await {
+            let album = album_or?;
+            let gphoto_album_id = GPhotoAlbumId(album.id.clone().unwrap());
+            scan_one_album(gphoto_client, gphoto_album_id, album, &mut result).await?;
+
+            all_albums_pb.set_length(all_albums_pb.length().unwrap() + 1);
+
+            all_albums_pb.inc(1);
+            num_shared -= 1;
+            if num_shared == 0 {
+                break;
+            }
+        }
+    }
+    if let Some(mut n) = args.items {
+        let items_pb = multi.add(ProgressBar::new(0));
+        items_pb.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+            )
+            .unwrap()
+            .progress_chars("##-"),
+        );
+        items_pb.set_message("Listing all media items");
+
+        let s = gphoto_client.media_items_stream();
+        pin_mut!(s);
+        while let Some(media_item) = s.next().await {
+            let media_item = media_item?;
+            result
+                .media_items
+                .insert(GPhotoItemId(media_item.id.clone().unwrap()), media_item);
+            n -= 1;
+            if n == 0 {
+                break;
+            }
+        }
+    }
+
+    Ok(result)
+}
+async fn search(
+    scan_result: &ScanResult,
+    pool: &Pool<Sqlite>,
+    immich_client: &ImmichClient,
+) -> Result<SearchResult> {
+    let mut result = SearchResult::default();
+    // Find what we can in immich/local db and establish links. What can't be found will be either
+    // skipped or created (in the stage that follows)
+    for (gphoto_id, media_item) in &scan_result.media_items {
+        let res = link_item(pool, immich_client, media_item).await?;
+        match res {
+            LookupResult::MatchedUniqueDB(immich_id) => {
+                result.linked_items.insert(gphoto_id.clone(), immich_id);
+            }
+            LookupResult::MatchedUnique(immich_id) => {
+                result
+                    .newly_linked_items
+                    .insert(gphoto_id.clone(), immich_id);
+            }
+            LookupResult::NotFound => {
+                result.unlinked_items.insert(gphoto_id.clone());
+            }
+            _ => {
+                result.skipped_items.insert(gphoto_id.clone());
+            }
+        }
+    }
+
+    let immich_albums = get_immich_albums(&immich_client).await?;
+    for (gphoto_album_id, gphoto_album) in &scan_result.albums {
+        match link_album(pool, gphoto_album, &immich_albums).await? {
+            AlbumLink::FoundDB(immich_id) => {
+                result
+                    .linked_albums
+                    .insert(gphoto_album_id.clone(), immich_id);
+            }
+            AlbumLink::FoundMetadata(immich_id) => {
+                result
+                    .newly_linked_albums
+                    .insert(gphoto_album_id.clone(), immich_id);
+            }
+            AlbumLink::NotFound => {
+                result.unlinked_albums.insert(gphoto_album_id.clone());
+            }
+        }
+    }
+    Ok(result)
+}
+async fn write(
+    search_result: &SearchResult,
+    scan_result: &ScanResult,
+    pool: &Pool<Sqlite>,
+    immich_client: &ImmichClient,
+    gphoto_client: &GPClient,
+) -> Result<()> {
+    let mut linked_albums = search_result.linked_albums.clone();
+    for gphoto_id in &search_result.unlinked_albums {
+        let album_metadata = scan_result.albums.get(gphoto_id).unwrap();
+        if immich_client.read_only {
+            info!("would have created album title {:?}", album_metadata.title);
+        } else {
+            let immich_id = create_linked_album(
+                pool,
+                immich_client,
+                gphoto_id,
+                album_metadata.title.as_ref().unwrap(),
+            )
+            .await?;
+            linked_albums.insert(gphoto_id.clone(), immich_id);
+        }
+    }
+    for (gphoto_id, immich_id) in &search_result.newly_linked_albums {
+        if immich_client.read_only {
+            info!("will write link {} <-> {}", gphoto_id, immich_id);
+        } else {
+            save_album_link(pool, gphoto_id, immich_id).await?;
+        }
+        linked_albums.insert(gphoto_id.clone(), immich_id.clone());
+    }
+    // No "skipped" to worry about with albums.
+
+    let mut linked_items = search_result.linked_items.clone();
+    // Write to immich: upload items and create albums in immich, save changes in the db.
+    for gphoto_id in &search_result.unlinked_items {
+        if immich_client.read_only {
+            info!("will copy gphoto item {} to immich", gphoto_id);
+        } else {
+            let immich_id = download_and_upload(
+                pool,
+                immich_client,
+                gphoto_client,
+                scan_result.media_items.get(gphoto_id).unwrap(),
+            )
+            .await?;
+            linked_items.insert(gphoto_id.clone(), immich_id);
+        }
+    }
+
+    for (gphoto_id, immich_id) in &search_result.newly_linked_items {
+        if immich_client.read_only {
+            info!(
+                "will write link {} <-> {} to local db",
+                gphoto_id, immich_id
+            );
+        } else {
+            let add_res = sqlx::query(
+                r#"
+INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time)
+VALUES ($1, $2, $3, $4)"#,
+            )
+            .bind(&gphoto_id.0)
+            .bind(&immich_id.0)
+            .bind("MatchedUnique")
+            .bind(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64,
+            )
+            .execute(pool)
+            .await;
+
+            if add_res.is_err() {
+                error!("failed to add the link {} {} to db", gphoto_id, immich_id);
+                continue;
+            } else {
+                linked_items.insert(gphoto_id.clone(), immich_id.clone());
+            }
+        }
+    }
+    // TODO: link/create albums
+
+    let immich_associations: HashMap<_, _> = scan_result
+        .associations
+        .iter()
+        .filter_map(|(gphoto_album_id, gphoto_items)| {
+            let immich_album_id = linked_albums.get(gphoto_album_id)?;
+            let immich_items: HashSet<_> = gphoto_items
+                .iter()
+                .filter_map(|gphoto_item_id| linked_items.get(gphoto_item_id))
+                .collect();
+            Some((immich_album_id, immich_items))
+        })
+        .collect();
+    // linked_items.iter().map(|(gphoto_id, immich_id)|)
+    for (immich_album_id, immich_items) in immich_associations {
+        let immich_ids: Vec<_> = immich_items
+            .iter()
+            .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
+            .collect();
+        if immich_client.read_only {
+            info!(
+                "will add to immich album {}: {:?}",
+                immich_album_id, immich_ids
+            );
+        } else {
+            albums_api::add_assets_to_album(
+                &(immich_client.get_config_for_writing()? as lib::immich_client::ApiConfigWrapper),
+                &immich_album_id.0,
+                models::BulkIdsDto { ids: immich_ids },
+                None,
+            )
+            .await
+            .with_context(|| format!("failed to add items to immich album {immich_album_id}"))?;
+        }
+    }
+    Ok(())
 }
 
 // Links a media item from google photos to a immich item. Linking is done by:
@@ -173,74 +467,19 @@ async fn link_item(
     Ok(rv)
 }
 
-#[derive(Debug)]
-struct LinkedItem {
-    // gphoto_id: GPhotoItemId,
-    gphoto_item: MediaItem,
-    link_type: LookupResult,
+enum AlbumLink {
+    FoundDB(ImmichAlbumId),
+    FoundMetadata(ImmichAlbumId),
+    NotFound,
 }
-// Tries to link all media items in gphoto album `gphoto_album_id` to immich media items.
-// Returs the list of all "link" results, the return value has one element for each media
-// item in the given gphoto album.
-async fn link_album_items(
-    pool: &Pool<Sqlite>,
-    immich_client: &ImmichClient,
-    gphoto_client: &GPClient,
-    album_metadata: &gphotos_api::models::Album,
-) -> Result<Vec<LinkedItem>> {
-    let gphoto_album_id = GPhotoAlbumId(album_metadata.id.clone().ok_or(anyhow!("missing id"))?);
-
-    let gphoto_items = gphoto_client
-        .album_items_stream(&gphoto_album_id)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .filter_map(|item| match item {
-            Ok(item) => Some(item),
-            Err(e) => {
-                error!("failed listing items: {e:?}");
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    let link_results = stream::iter(gphoto_items.into_iter().map(|gphoto_item| async move {
-        let id = gphoto_item.id.clone();
-        Ok(LinkedItem {
-            link_type: link_item(pool, immich_client, &gphoto_item)
-                .await
-                .with_context(|| format!("link item failed on {:?}", id))?,
-            gphoto_item,
-        })
-    }))
-    .buffer_unordered(1)
-    .collect::<Vec<_>>()
-    .await;
-
-    let errors = link_results
-        .iter()
-        .filter(|x: &&Result<LinkedItem>| x.is_err())
-        .collect::<Vec<_>>();
-    if errors.len() > 0 {
-        error!("link albums items errors: {:?}", errors);
-    }
-    Ok(link_results
-        .into_iter()
-        .filter_map(|r| match r {
-            Ok(l) => Some(l),
-            Err(_) => None,
-        })
-        .collect::<Vec<_>>())
-}
-
 // Goes through all of the albums in gphotos that pass the filter f and are not linked with
 // an immich album and tries to link them. Linking is done based on the album name only.
 // TODO: this picks a random album id for albums that have the same title. Detect it at least
 async fn link_album(
     pool: &Pool<Sqlite>,
-    immich_client: &ImmichClient,
     album_metadata: &gphotos_api::models::Album,
     immich_albums: &HashMap<String, Vec<ImmichAlbumId>>,
-) -> Result<ImmichAlbumId> {
+) -> Result<AlbumLink> {
     let gphoto_album_id = GPhotoAlbumId(album_metadata.id.clone().ok_or(anyhow!("missing id"))?);
     let album_title: String = album_metadata
         .title
@@ -255,7 +494,7 @@ async fn link_album(
             .map(|row| ImmichAlbumId(row.get("immich_id")))
     {
         debug!("album {album_title:?} ({gphoto_album_id}) exists in immich and we already know it has immich id {immich_album_id}");
-        return Ok(immich_album_id);
+        return Ok(AlbumLink::FoundDB(immich_album_id));
     };
 
     if let Some(immich_album_id) = {
@@ -293,21 +532,17 @@ async fn link_album(
         .await?
         .map(|row| ImmichAlbumId(row.get("immich_id")))
         {
-            debug!("album {album_title:?} already exists in immich but is mapped to another album, creating a new one");
-            if immich_client.read_only {
-                Ok(ImmichAlbumId("creating new album".to_string()))
-            } else {
-                create_linked_album(pool, immich_client, &gphoto_album_id, &album_title).await
-            }
+            debug!("album titled {album_title:?} already exists in immich but is mapped to another album, creating a new one");
+            Ok(AlbumLink::NotFound)
         } else {
             // Preserve the mapping in the local db.
             save_album_link(pool, &gphoto_album_id, &immich_album_id).await?;
-            Ok(immich_album_id)
+            Ok(AlbumLink::FoundMetadata(immich_album_id))
         }
     } else {
         // Create the new album in immich
         debug!("album {album_title:?} ({gphoto_album_id}) does not exist in immich, creating it");
-        create_linked_album(pool, immich_client, &gphoto_album_id, &album_title).await
+        Ok(AlbumLink::NotFound)
     }
 }
 
@@ -329,129 +564,6 @@ async fn save_album_link(
     .await?;
 
     Ok(r.rows_affected() > 0)
-}
-
-// Copies (downloads from gphoto and uploads to immich) all items given in `linked_items` and
-// associates them with the immich album identified `immich_album_id`.
-// TODO: this is WIP.
-// TODO: which items to copy? NotFound only?
-async fn copy_all_to_album(
-    pool: &Pool<Sqlite>,
-    immich_client: &ImmichClient,
-    c: CoalescingWorker<WrappedMediaItem, ImmichItemId>,
-    immich_album_id: &ImmichAlbumId,
-    linked_items: &[LinkedItem],
-    pb: ProgressBar,
-) -> Result<()> {
-    // List of items that are already in immich to (re-)add to this album. These are inserted into
-    // the db too.
-    let mut existing_items_to_add = vec![];
-    let mut records_added = 0;
-
-    let mut work = vec![];
-    for linked_item in linked_items {
-        match &linked_item.link_type {
-            LookupResult::NotFound | LookupResult::FoundMultiple => {
-                info!("Will copy item {:?}", linked_item);
-                work.push(linked_item.gphoto_item.clone());
-            }
-            LookupResult::MatchedUniqueDB(immich_id) => {
-                existing_items_to_add.push(immich_id.clone())
-            }
-            LookupResult::MatchedUnique(immich_id) => {
-                if !immich_client.read_only {
-                    let add_res = sqlx::query(
-                        r#"
-INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time)
-VALUES ($1, $2, $3, $4)"#,
-                    )
-                    .bind(linked_item.gphoto_item.id.as_ref().unwrap())
-                    .bind(&immich_id.0)
-                    .bind("MatchedUnique")
-                    .bind(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs() as i64,
-                    )
-                    .execute(pool)
-                    .await;
-
-                    if add_res.is_err() {
-                        error!(
-                            "failed to add the link {} {} to db",
-                            linked_item.gphoto_item.id.as_ref().unwrap(),
-                            &immich_id.0
-                        );
-                        continue;
-                    } else {
-                        existing_items_to_add.push(immich_id.clone());
-                        records_added += 1;
-                    }
-                } else {
-                    existing_items_to_add.push(immich_id.clone());
-                    records_added += 1;
-                }
-            }
-            _ => {
-                // Assuming item already exists in gphotos, skipping it
-                continue;
-            }
-        }
-    }
-    (*STATS.lock().unwrap().entry("records_added").or_default()) += records_added;
-    if immich_client.read_only {
-        debug!("skipping copy when read-only");
-        (*STATS.lock().unwrap().entry("items_uploaded").or_default()) += work.len();
-        return Ok(());
-    }
-    pb.inc((linked_items.len() - work.len()) as u64);
-    let copy_results = stream::iter(work)
-        .map(|gphoto_item| {
-            let pb = pb.clone();
-            let c = c.clone();
-            async move {
-                let res = c.do_work(WrappedMediaItem(gphoto_item)).await;
-                pb.inc(1);
-                res
-            }
-        })
-        // 100 is just a large number, concurrency is limited internally in the downloader.
-        .buffer_unordered(100)
-        .collect::<Vec<_>>()
-        .await;
-    let result = copy_results
-        .into_iter()
-        .filter_map(|r| match r {
-            Ok(immich_id) => Some(immich_id),
-            Err(ref e) => {
-                error!("copy failed on {:?}, error: {:?}", r, e);
-                None
-            }
-        })
-        .chain(existing_items_to_add.into_iter())
-        .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
-        .collect::<Vec<_>>();
-    debug!("uploaded {} items", result.len());
-
-    let n = result.len();
-    if n > 0 {
-        if immich_client.read_only {
-            warn!("immich: add {:?} to album {}", result, immich_album_id.0);
-        } else {
-            let res = albums_api::add_assets_to_album(
-                &immich_client.get_config(),
-                &immich_album_id.0,
-                models::BulkIdsDto { ids: result },
-                None,
-            )
-            .await
-            .with_context(|| format!("failed to add items to immich album {immich_album_id}"))?;
-            debug!("add to album result: {res:?}");
-        }
-        (*STATS.lock().unwrap().entry("items_added").or_default()) += n;
-    }
-    Ok(())
 }
 
 // Downloads a media_item identified by `gphoto_id` from google photos and uploads it
@@ -595,76 +707,6 @@ async fn create_linked_album(
     Ok(immich_album_id)
 }
 
-async fn do_one_album(
-    pool: &Pool<Sqlite>,
-    immich_client: &ImmichClient,
-    gphoto_client: &GPClient,
-    cop: CoalescingWorker<WrappedMediaItem, ImmichItemId>,
-    album_metadata: gphotos_api::models::Album,
-    immich_albums: &HashMap<String, Vec<ImmichAlbumId>>,
-    multi: MultiProgress,
-) -> Result<Vec<LinkedItem>> {
-    let pb = multi.add(ProgressBar::new(
-        album_metadata
-            .media_items_count
-            .clone()
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or_default(),
-    ));
-    pb.set_style(
-        ProgressStyle::with_template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-        )
-        .unwrap()
-        .progress_chars("##-"),
-    );
-
-    let album_title: String = album_metadata
-        .title
-        .clone()
-        .unwrap_or("<No title>".to_string());
-    pb.set_message(format!("{:?}: finding immich album", album_title));
-
-    let immich_album_id = link_album(pool, immich_client, &album_metadata, &immich_albums).await?;
-    pb.set_message(format!("{:?}: linking album items", album_title));
-
-    // Get the list of all media items in the gphoto album.
-    let linked_items =
-        link_album_items(pool, immich_client, gphoto_client, &album_metadata).await?;
-
-    let ress = group_items(linked_items.iter());
-    info!(
-        "linked gphoto album {} to immich {}, results: {:?}",
-        album_metadata
-            .product_url
-            .clone()
-            .unwrap_or("no_url".to_string()),
-        immich_album_id,
-        ress
-    );
-    pb.set_message(format!("{:?}: copying album items", album_title));
-    copy_all_to_album(
-        pool,
-        &immich_client,
-        cop,
-        &immich_album_id,
-        &linked_items,
-        pb,
-    )
-    .await?;
-    Ok(linked_items)
-}
-
-#[derive(PartialEq, Debug, Clone)]
-struct WrappedMediaItem(MediaItem);
-impl Eq for WrappedMediaItem {}
-impl Hash for WrappedMediaItem {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.id.as_ref().unwrap().hash(state)
-    }
-}
-
 async fn check_and_update_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let r = sqlx::query(r"SELECT insert_time FROM item_item_links LIMIT 1")
         .fetch_optional(pool)
@@ -691,6 +733,44 @@ UPDATE "item_item_links" SET insert_time = unixepoch(CURRENT_TIMESTAMP);
     Ok(())
 }
 
+async fn get_immich_albums(
+    immich_client: &ImmichClient,
+) -> Result<HashMap<String, Vec<ImmichAlbumId>>> {
+    let res = albums_api::get_all_albums(&immich_client.get_config(), None, None)
+        .await
+        .with_context(|| format!("failed to get list of immich albums"))?;
+
+    let immich_albums = res
+        .into_iter()
+        .map(|album| (album.album_name, ImmichAlbumId(album.id)))
+        .collect::<Vec<_>>();
+    // Maps various version of the (immich) album title to immich album id. The title "as-is" takes
+    // precedence. We then lookup gphoto album title (variants) in that map.
+    let mut m: HashMap<String, Vec<ImmichAlbumId>> = HashMap::new();
+
+    // Remove spaces - some albums have a trailing space.
+    for (name, id) in &immich_albums {
+        let name = name
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        m.entry(name).or_default().push(id.clone());
+        // m.insert(name, id.clone());
+    }
+
+    // Unicode normalization. I had "Trip in Graubu\u{308}nden" and "Trip in Graubünden" in albums
+    for (name, id) in &immich_albums {
+        let name: String = name.nfc().collect();
+        m.entry(name).or_default().push(id.clone());
+    }
+    // This mapping takes precedence in case there are albums with trailing space and without.
+    for (name, id) in immich_albums {
+        m.entry(name).or_default().push(id.clone());
+    }
+    Ok(m)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let logger =
@@ -701,13 +781,7 @@ async fn main() -> Result<()> {
         .unwrap();
     let args = Args::parse();
 
-    let num_shared = match args.shared_albums {
-        Some(Some(value)) => value.parse::<usize>().ok(),
-        Some(None) => Some(usize::MAX),
-        None => None,
-    };
-
-    let _ = dotenvy::from_filename(args.immich_auth)
+    let _ = dotenvy::from_filename(&args.immich_auth)
         .inspect_err(|err| warn!("failed to read .env file: {:?}", err));
 
     let mut create_schemas = false;
@@ -753,227 +827,17 @@ async fn main() -> Result<()> {
     }
     let gphoto_client = GPClient::new_from_file(&args.client_secret, &args.auth_token).await?;
 
-    let cop = {
-        let pool = pool.clone();
-        let immich_client = immich_client.clone();
-        let gphoto_client = gphoto_client.clone();
-        let cop =
-            CoalescingWorker::new(args.download_concurrency, move |item: WrappedMediaItem| {
-                let pool = pool.clone();
-                let immich_client = immich_client.clone();
-                let gphoto_client = gphoto_client.clone();
-                async move {
-                    if immich_client.read_only {
-                        // bail out early to not have to download items.
-                        return Err(anyhow!("running read only, won't download"));
-                    }
-                    download_and_upload(&pool, &immich_client, &gphoto_client, &item.0)
-                        .await
-                        .with_context(|| format!("copy failed for item {}", item.0.id.unwrap()))
-                }
-            });
-        cop
-    };
+    let scan_result = scan(&args, &multi, &gphoto_client).await?;
+    let search_result = search(&scan_result, &pool, &immich_client).await?;
+    write(
+        &search_result,
+        &scan_result,
+        &pool,
+        &immich_client,
+        &gphoto_client,
+    )
+    .await?;
 
-    let res = albums_api::get_all_albums(&immich_client.get_config(), None, None)
-        .await
-        .with_context(|| format!("failed to get list of immich albums"))?;
-
-    let immich_albums = res
-        .into_iter()
-        .map(|album| (album.album_name, ImmichAlbumId(album.id)))
-        .collect::<Vec<_>>();
-    // Maps various version of the (immich) album title to immich album id. The title "as-is" takes
-    // precedence. We then lookup gphoto album title (variants) in that map.
-    let mut m: HashMap<String, Vec<ImmichAlbumId>> = HashMap::new();
-
-    // Remove spaces - some albums have a trailing space.
-    for (name, id) in &immich_albums {
-        let name = name
-            .split(' ')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        m.entry(name).or_default().push(id.clone());
-        // m.insert(name, id.clone());
-    }
-
-    // Unicode normalization. I had "Trip in Graubu\u{308}nden" and "Trip in Graubünden" in albums
-    for (name, id) in &immich_albums {
-        let name: String = name.nfc().collect();
-        m.entry(name).or_default().push(id.clone());
-    }
-    // This mapping takes precedence in case there are albums with trailing space and without.
-    for (name, id) in immich_albums {
-        m.entry(name).or_default().push(id.clone());
-    }
-    let immich_albums = Arc::new(m);
-
-    debug!("immich albums: {:?}", immich_albums);
-
-    if let Some(gphoto_album_id) = args.gphoto_album_id {
-        let gphoto_album_id = GPhotoAlbumId(gphoto_album_id);
-        let album_metadata = gphoto_client
-            .get_album(&gphoto_album_id)
-            .await
-            .with_context(|| format!("failed to get gphoto album with id {gphoto_album_id}"))?;
-        let _ = do_one_album(
-            &pool,
-            &immich_client,
-            &gphoto_client,
-            cop.clone(),
-            album_metadata,
-            &immich_albums,
-            multi.clone(),
-        )
-        .await?;
-    }
-    if let Some(mut num_shared) = num_shared {
-        let all_albums_pb = multi.add(ProgressBar::new(0));
-        all_albums_pb.set_style(
-            ProgressStyle::with_template(
-                "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-            )
-            .unwrap()
-            .progress_chars("##-"),
-        );
-        all_albums_pb.set_message("Progress in albums");
-
-        let mut shared_albums_results = vec![];
-        let shared_albums_stream = gphoto_client.shared_albums_stream();
-        pin_mut!(shared_albums_stream);
-        while let Some(album_or) = shared_albums_stream.next().await {
-            let album = album_or?;
-            all_albums_pb.set_length(all_albums_pb.length().unwrap() + 1);
-            debug!("copying album {:?}", album.title);
-            let res = do_one_album(
-                &pool,
-                &immich_client,
-                &gphoto_client,
-                cop.clone(),
-                album,
-                &immich_albums,
-                multi.clone(),
-            )
-            .await;
-            all_albums_pb.inc(1);
-            // Early exit if no NotFound items were encountered.
-            if args.early_exit {
-                if let Ok(link_items) = &res {
-                    if link_items
-                        .iter()
-                        .filter(|x| match x.link_type {
-                            LookupResult::NotFound => true,
-                            _ => false,
-                        })
-                        .count()
-                        == 0
-                    {
-                        info!("An album with no unseen items encountered, stopping");
-                        break;
-                    }
-                }
-            }
-            shared_albums_results.push(res);
-            num_shared -= 1;
-            if num_shared == 0 {
-                break;
-            }
-        }
-        let errors = shared_albums_results
-            .iter()
-            .filter(|x| x.is_err())
-            .collect::<Vec<_>>();
-        if errors.len() > 0 {
-            error!("shared albums errors: {:?}", errors);
-        }
-        let ok_res = shared_albums_results
-            .into_iter()
-            .filter_map(|r| match r {
-                Ok(l) => Some(l),
-                Err(_) => None,
-            })
-            .flatten()
-            .collect::<Vec<_>>();
-        let ress = group_items(ok_res.iter());
-        info!("linking all shared albums items: {:?}", ress);
-        for r in ok_res {
-            match r.link_type {
-                LookupResult::NotFound => {
-                    info!(
-                        "NotFound: {}, {}",
-                        r.gphoto_item.filename.unwrap_or("no_filename>".to_string()),
-                        r.gphoto_item.product_url.unwrap_or("no_url".to_string())
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-    if let Some(n) = args.items {
-        let items_pb = multi.add(ProgressBar::new(0));
-        items_pb.set_style(
-            ProgressStyle::with_template(
-                "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-            )
-            .unwrap()
-            .progress_chars("##-"),
-        );
-        items_pb.set_message("Listing all media items");
-
-        let items_stream = gphoto_client
-            .media_items_stream()
-            .take(n)
-            .map(|media_item| {
-                let pb = items_pb.clone();
-                pb.set_length(pb.length().unwrap() + 1);
-                let pool = pool.clone();
-                let immich_client = immich_client.clone();
-                async move {
-                    let item = media_item?;
-                    let res = link_item(&pool, &immich_client, &item).await;
-                    pb.inc(1);
-                    res.map(|res| LinkedItem {
-                        gphoto_item: item,
-                        link_type: res,
-                    })
-                }
-            })
-            .collect::<Vec<_>>()
-            .await;
-        items_pb.set_message("linking items");
-        let res = stream::iter(items_stream)
-            .buffer_unordered(10)
-            .collect::<Vec<_>>()
-            .await;
-        let num_err = res.iter().filter(|r| r.is_err()).count();
-        info!("num errors: {}", num_err);
-
-        let ress = group_items(res.iter().filter_map(|r| match r {
-            Ok(l) => Some(l),
-            Err(_) => None,
-        }));
-        info!("matching results: {:?}", ress);
-    }
     println!("stats: {:?}", STATS.lock().unwrap());
     Ok(())
-}
-
-fn group_items<'a>(items: impl Iterator<Item = &'a LinkedItem>) -> HashMap<LookupResult, usize> {
-    let mut ress: HashMap<_, usize> = HashMap::new();
-    items
-        .map(|res| match res.link_type {
-            LookupResult::FoundUnique(_) => {
-                LookupResult::FoundUnique(ImmichItemId("_".to_string()))
-            }
-            LookupResult::MatchedUniqueDB(_) => {
-                LookupResult::MatchedUniqueDB(ImmichItemId("_".to_string()))
-            }
-            LookupResult::MatchedUnique(_) => {
-                LookupResult::MatchedUnique(ImmichItemId("_".to_string()))
-            }
-            _ => res.link_type.clone(),
-        })
-        .for_each(|anon_res| *ress.entry(anon_res).or_default() += 1);
-    ress
 }
