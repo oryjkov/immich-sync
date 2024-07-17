@@ -18,7 +18,7 @@ use lib::gpclient::GPClient;
 use lib::immich_client::ImmichClient;
 use lib::match_metadata::{compare_metadata, ImageData};
 use lib::types::*;
-use log::Level::{Debug, Warn};
+use log::Level::{Info, Warn};
 use log::{debug, error, info, log_enabled, warn};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
@@ -481,7 +481,7 @@ VALUES ($1, $2, $3, $4)"#,
                                 product_url.red()
                             );
                             if !message.is_empty() {
-                                warn!("debug message: {}", message);
+                                info!("debug message: {}", message);
                             }
                         }
                         None
@@ -626,7 +626,7 @@ async fn link_item(
                 _ => LookupResult::MatchedUnique(ImmichItemId(immich_item.id.clone())),
             };
         } else {
-            if log_enabled!(Debug) {
+            if log_enabled!(Info) {
                 message.push_str(&format!(
                     "{}: No metadata match! gphoto_id: {}\n",
                     filename.yellow(),
