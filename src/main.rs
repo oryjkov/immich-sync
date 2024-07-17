@@ -18,7 +18,7 @@ use lib::gpclient::GPClient;
 use lib::immich_client::ImmichClient;
 use lib::match_metadata::{compare_metadata, ImageData};
 use lib::types::*;
-use log::Level::{Info, Warn};
+use log::Level::Warn;
 use log::{debug, error, info, log_enabled, warn};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
@@ -115,7 +115,7 @@ impl SearchResult {
                 ElementLinkResult::Unknown(_) => "item skipped - no good match",
                 ElementLinkResult::Found(_) => "found metadata",
                 ElementLinkResult::ExistsInDB(_) => "found db",
-                ElementLinkResult::CreateNew => "copy to immich",
+                ElementLinkResult::CreateNew(_) => "copy to immich",
             };
             *items_summary.entry(group.to_string()).or_default() += 1;
         }
@@ -125,7 +125,7 @@ impl SearchResult {
                 ElementLinkResult::Unknown(_) => "skipped",
                 ElementLinkResult::Found(_) => "found metadata",
                 ElementLinkResult::ExistsInDB(_) => "found db",
-                ElementLinkResult::CreateNew => "create new",
+                ElementLinkResult::CreateNew(_) => "create new",
             };
             *albums_summary.entry(group.to_string()).or_default() += 1;
         }
@@ -140,7 +140,7 @@ impl SearchResult {
 enum ElementLinkResult<LinkedType> {
     ExistsInDB(LinkedType), // Element found in the db
     Found(LinkedType),      // Element found based on metadata, should record in the db
-    CreateNew,              // Element not found, should create it
+    CreateNew(String),      // Element not found, should create it
     Unknown(String),        // IDK!
 }
 
@@ -320,7 +320,11 @@ async fn search(
         let x = match link_res {
             LookupResult::MatchedUniqueDB(immich_id) => ElementLinkResult::ExistsInDB(immich_id),
             LookupResult::MatchedUnique(immich_id) => ElementLinkResult::Found(immich_id),
-            LookupResult::NotFound => ElementLinkResult::CreateNew,
+            // the following two should be CreateNew, but I'm worried about matching not
+            // working and getting a bunch of dupes.
+            // LookupResult::FoundMultiple => ElementLinkResult::CreateNew(message),
+            // LookupResult::FoundUnique(_) => ElementLinkResult::CreateNew(message),
+            LookupResult::NotFound => ElementLinkResult::CreateNew(message),
             _ => ElementLinkResult::Unknown(message),
         };
         (gphoto_id.clone(), x)
@@ -368,7 +372,7 @@ async fn write(
                 }
                 linked_albums.insert(gphoto_id.clone(), immich_id.clone());
             }
-            ElementLinkResult::CreateNew => {
+            ElementLinkResult::CreateNew(_) => {
                 let album_metadata = scan_result.albums.get(gphoto_id).unwrap();
                 if immich_client.read_only {
                     info!("will have created album titled {:?}", album_metadata.title);
@@ -401,7 +405,7 @@ async fn write(
             .media_items
             .iter()
             .filter(|(_, x)| match x {
-                ElementLinkResult::CreateNew => true,
+                ElementLinkResult::CreateNew(_) => true,
                 _ => false,
             })
             .count() as u64,
@@ -450,6 +454,7 @@ VALUES ($1, $2, $3, $4)"#,
                             )
                             .execute(pool)
                             .await;
+                            (*STATS.lock().unwrap().entry("items_linked").or_default()) += 1;
 
                             if add_res.is_err() {
                                 error!(
@@ -461,9 +466,13 @@ VALUES ($1, $2, $3, $4)"#,
                         }
                         Some(immich_id.clone())
                     }
-                    ElementLinkResult::CreateNew => {
+                    ElementLinkResult::CreateNew(message) => {
                         let r = if immich_client.read_only {
-                            info!("will copy {} to immich", product_url.red());
+                            info!(
+                                "will copy {} to immich, match: {}",
+                                product_url.red(),
+                                message
+                            );
                             Some(ImmichItemId("NEW_ITEM".to_string()))
                         } else {
                             download_and_upload(pool, immich_client, gphoto_client, metadata)
@@ -612,6 +621,10 @@ async fn link_item(
     let mut rv = LookupResult::NotFound;
     let res = search_api::search_metadata(&immich_client.get_config(), search_req).await?;
     (*STATS.lock().unwrap().entry("item_searched").or_default()) += 1;
+    message.push_str(&format!(
+        "found {} filename matches; ",
+        res.assets.items.len()
+    ));
     if res.assets.items.len() == 1 {
         rv = LookupResult::FoundUnique(ImmichItemId(res.assets.items[0].id.clone()));
     } else if res.assets.items.len() > 1 {
@@ -622,29 +635,39 @@ async fn link_item(
 
         if compare_metadata(&gphoto_metadata, &immich_metadata) {
             rv = match rv {
-                LookupResult::MatchedUnique(_) => LookupResult::MatchedMultiple,
-                _ => LookupResult::MatchedUnique(ImmichItemId(immich_item.id.clone())),
+                LookupResult::MatchedUnique(_) => {
+                    message.push_str(&format!(
+                        " and {}",
+                        immich_client.item_url(&ImmichItemId(immich_item.id.clone()))
+                    ));
+                    LookupResult::MatchedMultiple
+                }
+                _ => {
+                    message.push_str(&format!(
+                        "matched {}",
+                        immich_client.item_url(&ImmichItemId(immich_item.id.clone()))
+                    ));
+                    LookupResult::MatchedUnique(ImmichItemId(immich_item.id.clone()))
+                }
             };
         } else {
-            if log_enabled!(Info) {
-                message.push_str(&format!(
-                    "{}: No metadata match! gphoto_id: {}\n",
-                    filename.yellow(),
-                    gphoto_id
-                ));
-                message.push_str(&format!(
-                    "{} {:?}\n{} {:?}\n",
-                    "gphoto metadata:".red(),
-                    gphoto_metadata,
-                    "immich metadata:".green(),
-                    immich_metadata
-                ));
-                message.push_str(&format!(
-                    "raw gphoto metadata: {}\nraw immich metadata: {}",
-                    serde_json::to_string(gphoto_item.media_metadata.as_ref().unwrap()).unwrap(),
-                    serde_json::to_string(&immich_item).unwrap()
-                ));
-            }
+            message.push_str(&format!(
+                "{}: No metadata match! gphoto_id: {}\n",
+                filename.yellow(),
+                gphoto_id
+            ));
+            message.push_str(&format!(
+                "{} {:?}\n{} {:?}\n",
+                "gphoto metadata:".red(),
+                gphoto_metadata,
+                "immich metadata:".green(),
+                immich_metadata
+            ));
+            message.push_str(&format!(
+                "raw gphoto metadata: {}\nraw immich metadata: {}",
+                serde_json::to_string(gphoto_item.media_metadata.as_ref().unwrap()).unwrap(),
+                serde_json::to_string(&immich_item).unwrap()
+            ));
         }
     }
     Ok((rv, message))
@@ -711,7 +734,7 @@ async fn link_album(
         .map(|row| ImmichAlbumId(row.get("immich_id")))
         {
             debug!("album titled {album_title:?} already exists in immich but is mapped to another album, creating a new one");
-            Ok(ElementLinkResult::CreateNew)
+            Ok(ElementLinkResult::CreateNew("".to_string()))
         } else {
             // Preserve the mapping in the local db.
             save_album_link(pool, &gphoto_album_id, &immich_album_id).await?;
@@ -720,7 +743,7 @@ async fn link_album(
     } else {
         // Create the new album in immich
         debug!("album {album_title:?} ({gphoto_album_id}) does not exist in immich, creating it");
-        Ok(ElementLinkResult::CreateNew)
+        Ok(ElementLinkResult::CreateNew("".to_string()))
     }
 }
 
