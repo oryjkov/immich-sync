@@ -191,7 +191,11 @@ async fn scan(args: &Args, multi: &MultiProgress, gphoto_client: &GPClient) -> R
         scan_one_album(gphoto_client, gphoto_album_id, album_metadata, &mut result).await?;
     }
     if let Some(mut num_shared) = num_shared {
-        let all_albums_pb = multi.add(ProgressBar::new(0));
+        let all_albums_pb = multi.add(ProgressBar::new(if num_shared == usize::MAX {
+            0
+        } else {
+            num_shared as u64
+        }));
         all_albums_pb.set_style(
             ProgressStyle::with_template(
                 "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
@@ -208,7 +212,9 @@ async fn scan(args: &Args, multi: &MultiProgress, gphoto_client: &GPClient) -> R
             let gphoto_album_id = GPhotoAlbumId(album.id.clone().unwrap());
             scan_one_album(gphoto_client, gphoto_album_id, album, &mut result).await?;
 
-            all_albums_pb.set_length(all_albums_pb.length().unwrap() + 1);
+            if num_shared == usize::MAX {
+                all_albums_pb.set_length(all_albums_pb.length().unwrap() + 1);
+            }
 
             all_albums_pb.inc(1);
             num_shared -= 1;
@@ -245,16 +251,32 @@ async fn scan(args: &Args, multi: &MultiProgress, gphoto_client: &GPClient) -> R
     Ok(result)
 }
 async fn search(
+    multi: &MultiProgress,
     scan_result: &ScanResult,
     pool: &Pool<Sqlite>,
     immich_client: &ImmichClient,
 ) -> Result<SearchResult> {
+    let media_items_pb = multi.add(ProgressBar::new(scan_result.media_items.len() as u64));
+    media_items_pb.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    media_items_pb.set_message("Linking media items");
+
     let mut result = SearchResult::default();
     // Find what we can in immich/local db and establish links. What can't be found will be either
     // skipped or created (in the stage that follows)
     result.media_items = stream::iter(scan_result.media_items.iter().map(
-        |(gphoto_id, media_item)| async move {
-            (gphoto_id, link_item(pool, immich_client, media_item).await)
+        |(gphoto_id, media_item)| {
+            let pb = media_items_pb.clone();
+            async move {
+                let r = (gphoto_id, link_item(pool, immich_client, media_item).await);
+                pb.inc(1);
+                r
+            }
         },
     ))
     .buffer_unordered(10)
@@ -279,13 +301,25 @@ async fn search(
     })
     .collect();
 
+    let albums_pb = multi.add(ProgressBar::new(scan_result.albums.len() as u64));
+    albums_pb.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    albums_pb.set_message("Linking albums");
+
     let immich_albums = get_immich_albums(&immich_client).await?;
     for (gphoto_album_id, gphoto_album) in &scan_result.albums {
         let x = link_album(pool, gphoto_album, &immich_albums).await?;
+        albums_pb.inc(1);
         result.albums.insert(gphoto_album_id.clone(), x);
     }
     Ok(result)
 }
+
 async fn write(
     search_result: &SearchResult,
     scan_result: &ScanResult,
@@ -877,7 +911,7 @@ async fn main() -> Result<()> {
         scan_result.media_items.len(),
         scan_result.albums.len()
     );
-    let search_result = search(&scan_result, &pool, &immich_client).await?;
+    let search_result = search(&multi, &scan_result, &pool, &immich_client).await?;
     search_result.log_summary();
 
     write(
