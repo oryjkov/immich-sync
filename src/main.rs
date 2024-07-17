@@ -490,18 +490,23 @@ VALUES ($1, $2, $3, $4)"#,
             .into_iter()
             .map(|(immich_album_id, immich_items)| {
                 let pb = albums_add_pb.clone();
-                let immich_ids: Vec<_> = immich_items
-                    .iter()
-                    .map(|id| uuid::Uuid::parse_str(&id.0).unwrap())
-                    .collect();
                 async move {
                     if immich_client.read_only {
                         info!(
                             "will add {} items to immich album {}",
-                            immich_ids.len(),
+                            immich_items.len(),
                             immich_album_id,
                         );
                     } else {
+                        let immich_ids: Vec<_> = immich_items
+                            .iter()
+                            .map(|id| {
+                                uuid::Uuid::parse_str(&id.0)
+                                    .with_context(|| format!("while parsing {}", id.0))
+                                    .unwrap()
+                            })
+                            .collect();
+
                         let _ = albums_api::add_assets_to_album(
                             &(immich_client.get_config_for_writing().unwrap()
                                 as lib::immich_client::ApiConfigWrapper),
