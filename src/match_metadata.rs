@@ -106,7 +106,7 @@ pub fn compare_metadata(a: &ImageData, b: &ImageData) -> bool {
     let mut has_match = false;
     for t_a in &a.all_times {
         for t_b in &b.all_times {
-            if t_a == t_b {
+            if t_a.timestamp() == t_b.timestamp() {
                 has_match = true;
                 break;
             }
@@ -358,6 +358,21 @@ mod tests {
     fn test_should_match() {
         let gphoto_metadata = r#"{"creationTime":"2024-06-27T19:35:56.496Z","width":"3072","height":"4080","photo":{"cameraMake":"Google","cameraModel":"Pixel 6","focalLength":6.81,"apertureFNumber":1.85,"isoEquivalent":104,"exposureTime":"0.041997s"}}"#;
         let immich_metadata = r#"{"checksum":"lw5y6IsCo11RT8+dYgQmWrE+5QU=","deviceAssetId":"970e72e88b02a35d514fcf9d6204265ab13ee505","deviceId":"immich-sync","duplicateId":null,"duration":"0:00:00.00000","exifInfo":{"city":null,"country":null,"dateTimeOriginal":"2024-06-27T19:35:56.496Z","description":"","exifImageHeight":4080.0,"exifImageWidth":3072.0,"exposureTime":"1/24","fNumber":1.9,"fileSizeInByte":792315,"focalLength":6.81,"iso":104.0,"latitude":null,"lensModel":"Pixel 6 back camera 6.81mm f/1.85","longitude":null,"make":"Google","model":"Pixel 6","modifyDate":"2024-06-27T19:35:56.496Z","orientation":"1","projectionType":null,"state":null,"timeZone":"UTC+2"},"fileCreatedAt":"2024-06-27T19:35:56.496Z","fileModifiedAt":"2024-06-27T19:35:56.496Z","hasMetadata":true,"id":"e8fc8390-6512-436c-b407-945823c400e2","isArchived":false,"isFavorite":false,"isOffline":false,"isTrashed":false,"libraryId":null,"livePhotoVideoId":null,"localDateTime":"2024-06-27T21:35:56.496Z","originalFileName":"PXL_20240627_193556496.jpg","originalMimeType":"image/jpeg","originalPath":"upload/upload/fe5315c8-d1cd-4822-a3c9-1e00d244e71a/3c/63/3c63237e-fe75-4f75-857d-e2af4c151a40.jpg","ownerId":"fe5315c8-d1cd-4822-a3c9-1e00d244e71a","people":[],"resized":true,"stackCount":null,"thumbhash":"1icKDQZxiE+ImHbYdnmHeC+5zPas","type":"IMAGE","updatedAt":"2024-07-02T10:18:00.641Z"}"#;
+        let g: ImageData =
+            (&serde_json::from_str::<gphotos_api::models::MediaItemMediaMetadata>(gphoto_metadata)
+                .unwrap())
+                .try_into()
+                .unwrap();
+        let i: ImageData = serde_json::from_str::<AssetResponseDto>(immich_metadata)
+            .unwrap()
+            .into();
+
+        assert!(compare_metadata(&g, &i));
+    }
+    #[test]
+    fn test_should_match_ignore_subseconds() {
+        let gphoto_metadata = r#"{"creationTime":"2022-03-13T14:50:02.128Z","width":"4032","height":"3024","photo":{"cameraMake":"samsung","cameraModel":"SM-G9650","focalLength":4.3,"apertureFNumber":2.4,"isoEquivalent":50,"exposureTime":"0.000794912s"}}"#;
+        let immich_metadata = r#"{"checksum":"xRXIDk2NSg5ZvpCqBj+xHHlLxlc=","deviceAssetId":"20220313_155002.jpg-788349","deviceId":"dsk","duplicateId":null,"duration":"0:00:00.00000","exifInfo":{"city":null,"country":null,"dateTimeOriginal":"2022-03-13T15:50:02.128Z","description":"","exifImageHeight":3024.0,"exifImageWidth":4032.0,"exposureTime":"1/1258","fNumber":2.4,"fileSizeInByte":788349,"focalLength":4.3,"iso":50.0,"latitude":null,"lensModel":null,"longitude":null,"make":"samsung","model":"SM-G9650","modifyDate":"2022-03-13T15:50:02.128Z","orientation":"1","projectionType":null,"state":null,"timeZone":null},"fileCreatedAt":"2022-03-13T15:50:02.128Z","fileModifiedAt":"2022-03-13T14:50:02.000Z","hasMetadata":true,"id":"eb4b4256-cb1a-4ee4-88e6-95fc5537666e","isArchived":false,"isFavorite":false,"isOffline":false,"isTrashed":false,"libraryId":null,"livePhotoVideoId":null,"localDateTime":"2022-03-13T15:50:02.128Z","originalFileName":"20220313_155002.jpg","originalMimeType":"image/jpeg","originalPath":"upload/upload/4f13d54e-b06a-48dc-8f7e-1d47fffe1425/d3/e0/d3e02ad4-2886-43fc-90b4-a6573d26daed.jpg","ownerId":"4f13d54e-b06a-48dc-8f7e-1d47fffe1425","people":[],"resized":true,"stackCount":null,"thumbhash":"YOcNFYSpd3ZPZXZoiCiJdv+R0w1J","type":"IMAGE","updatedAt":"2024-06-18T14:42:33.099Z"}"#;
         let g: ImageData =
             (&serde_json::from_str::<gphotos_api::models::MediaItemMediaMetadata>(gphoto_metadata)
                 .unwrap())
