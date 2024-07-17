@@ -103,23 +103,16 @@ struct ScanResult {
 }
 #[derive(Debug, Default)]
 struct SearchResult {
-    // Link found in the DB
-    linked_items: HashMap<GPhotoItemId, ImmichItemId>,
-    // Linked by metadata, needs writing to the DB
-    newly_linked_items: HashMap<GPhotoItemId, ImmichItemId>,
-    // Link not found, will need to be copied.
-    unlinked_items: HashSet<GPhotoItemId>,
-    // Don't know what to do.
-    skipped_items: HashSet<GPhotoItemId>,
+    media_items: HashMap<GPhotoItemId, ElementLinkResult<ImmichItemId>>,
+    albums: HashMap<GPhotoAlbumId, ElementLinkResult<ImmichAlbumId>>,
+}
 
-    // Link found in the DB
-    linked_albums: HashMap<GPhotoAlbumId, ImmichAlbumId>,
-    // Linked by metadata, needs writing to the DB
-    newly_linked_albums: HashMap<GPhotoAlbumId, ImmichAlbumId>,
-    // Link not found, will need to be copied.
-    unlinked_albums: HashSet<GPhotoAlbumId>,
-    // Don't know what to do.
-    // skipped_albums: HashSet<GPhotoAlbumId>,
+#[derive(Debug)]
+enum ElementLinkResult<LinkedType> {
+    ExistsInDB(LinkedType), // Element found in the db
+    Found(LinkedType),      // Element found based on metadata, should record in the db
+    CreateNew,              // Element not found, should create it
+    Unknown,                // IDK!
 }
 
 async fn scan_one_album(
@@ -234,39 +227,32 @@ async fn search(
         let res = link_item(pool, immich_client, media_item).await?;
         match res {
             LookupResult::MatchedUniqueDB(immich_id) => {
-                result.linked_items.insert(gphoto_id.clone(), immich_id);
+                result
+                    .media_items
+                    .insert(gphoto_id.clone(), ElementLinkResult::ExistsInDB(immich_id));
             }
             LookupResult::MatchedUnique(immich_id) => {
                 result
-                    .newly_linked_items
-                    .insert(gphoto_id.clone(), immich_id);
+                    .media_items
+                    .insert(gphoto_id.clone(), ElementLinkResult::Found(immich_id));
             }
             LookupResult::NotFound => {
-                result.unlinked_items.insert(gphoto_id.clone());
+                result
+                    .media_items
+                    .insert(gphoto_id.clone(), ElementLinkResult::CreateNew);
             }
             _ => {
-                result.skipped_items.insert(gphoto_id.clone());
+                result
+                    .media_items
+                    .insert(gphoto_id.clone(), ElementLinkResult::Unknown);
             }
         }
     }
 
     let immich_albums = get_immich_albums(&immich_client).await?;
     for (gphoto_album_id, gphoto_album) in &scan_result.albums {
-        match link_album(pool, gphoto_album, &immich_albums).await? {
-            AlbumLink::FoundDB(immich_id) => {
-                result
-                    .linked_albums
-                    .insert(gphoto_album_id.clone(), immich_id);
-            }
-            AlbumLink::FoundMetadata(immich_id) => {
-                result
-                    .newly_linked_albums
-                    .insert(gphoto_album_id.clone(), immich_id);
-            }
-            AlbumLink::NotFound => {
-                result.unlinked_albums.insert(gphoto_album_id.clone());
-            }
-        }
+        let x = link_album(pool, gphoto_album, &immich_albums).await?;
+        result.albums.insert(gphoto_album_id.clone(), x);
     }
     Ok(result)
 }
@@ -275,84 +261,100 @@ async fn write(
     scan_result: &ScanResult,
     pool: &Pool<Sqlite>,
     immich_client: &ImmichClient,
-    gphoto_client: &GPClient,
+    gphoto_client: &GPClient, // needed for downloading photos
 ) -> Result<()> {
-    let mut linked_albums = search_result.linked_albums.clone();
-    for gphoto_id in &search_result.unlinked_albums {
-        let album_metadata = scan_result.albums.get(gphoto_id).unwrap();
-        if immich_client.read_only {
-            info!("would have created album title {:?}", album_metadata.title);
-        } else {
-            let immich_id = create_linked_album(
-                pool,
-                immich_client,
-                gphoto_id,
-                album_metadata.title.as_ref().unwrap(),
-            )
-            .await?;
-            linked_albums.insert(gphoto_id.clone(), immich_id);
-        }
-    }
-    for (gphoto_id, immich_id) in &search_result.newly_linked_albums {
-        if immich_client.read_only {
-            info!("will write link {} <-> {}", gphoto_id, immich_id);
-        } else {
-            save_album_link(pool, gphoto_id, immich_id).await?;
-        }
-        linked_albums.insert(gphoto_id.clone(), immich_id.clone());
-    }
-    // No "skipped" to worry about with albums.
-
-    let mut linked_items = search_result.linked_items.clone();
-    // Write to immich: upload items and create albums in immich, save changes in the db.
-    for gphoto_id in &search_result.unlinked_items {
-        if immich_client.read_only {
-            info!("will copy gphoto item {} to immich", gphoto_id);
-        } else {
-            let immich_id = download_and_upload(
-                pool,
-                immich_client,
-                gphoto_client,
-                scan_result.media_items.get(gphoto_id).unwrap(),
-            )
-            .await?;
-            linked_items.insert(gphoto_id.clone(), immich_id);
-        }
-    }
-
-    for (gphoto_id, immich_id) in &search_result.newly_linked_items {
-        if immich_client.read_only {
-            info!(
-                "will write link {} <-> {} to local db",
-                gphoto_id, immich_id
-            );
-        } else {
-            let add_res = sqlx::query(
-                r#"
-INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time)
-VALUES ($1, $2, $3, $4)"#,
-            )
-            .bind(&gphoto_id.0)
-            .bind(&immich_id.0)
-            .bind("MatchedUnique")
-            .bind(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64,
-            )
-            .execute(pool)
-            .await;
-
-            if add_res.is_err() {
-                error!("failed to add the link {} {} to db", gphoto_id, immich_id);
-                continue;
-            } else {
-                linked_items.insert(gphoto_id.clone(), immich_id.clone());
+    let mut linked_albums = HashMap::new();
+    for (gphoto_id, link) in &search_result.albums {
+        match link {
+            ElementLinkResult::ExistsInDB(immich_id) => {
+                linked_albums.insert(gphoto_id.clone(), immich_id.clone());
+            }
+            ElementLinkResult::Found(immich_id) => {
+                if immich_client.read_only {
+                    info!("will write album link {} <-> {}", gphoto_id, immich_id);
+                } else {
+                    save_album_link(pool, gphoto_id, immich_id).await?;
+                }
+                linked_albums.insert(gphoto_id.clone(), immich_id.clone());
+            }
+            ElementLinkResult::CreateNew => {
+                let album_metadata = scan_result.albums.get(gphoto_id).unwrap();
+                if immich_client.read_only {
+                    info!("will have created album titled {:?}", album_metadata.title);
+                    linked_albums.insert(gphoto_id.clone(), ImmichAlbumId("NEW_ALBUM".to_string()));
+                } else {
+                    let immich_id = create_linked_album(
+                        pool,
+                        immich_client,
+                        gphoto_id,
+                        album_metadata.title.as_ref().unwrap(),
+                    )
+                    .await?;
+                    linked_albums.insert(gphoto_id.clone(), immich_id);
+                }
+            }
+            ElementLinkResult::Unknown => {
+                error!("should not happen for albums");
             }
         }
     }
-    // TODO: link/create albums
+
+    let mut linked_items = HashMap::new();
+    for (gphoto_id, link) in &search_result.media_items {
+        match link {
+            ElementLinkResult::ExistsInDB(immich_id) => {
+                linked_items.insert(gphoto_id.clone(), immich_id.clone());
+            }
+            ElementLinkResult::Found(immich_id) => {
+                if immich_client.read_only {
+                    info!("will write item link {} <-> {}", gphoto_id, immich_id);
+                } else {
+                    let add_res = sqlx::query(
+                        r#"
+INSERT INTO item_item_links (gphoto_id, immich_id, link_type, insert_time)
+VALUES ($1, $2, $3, $4)"#,
+                    )
+                    .bind(&gphoto_id.0)
+                    .bind(&immich_id.0)
+                    .bind("MatchedUnique")
+                    .bind(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64,
+                    )
+                    .execute(pool)
+                    .await;
+
+                    if add_res.is_err() {
+                        error!("failed to add the link {} {} to db", gphoto_id, immich_id);
+                        continue;
+                    } else {
+                        linked_items.insert(gphoto_id.clone(), immich_id.clone());
+                    }
+                }
+                linked_items.insert(gphoto_id.clone(), immich_id.clone());
+            }
+            ElementLinkResult::CreateNew => {
+                if immich_client.read_only {
+                    info!("will copy {} to immich", gphoto_id);
+                    linked_items.insert(gphoto_id.clone(), ImmichItemId("NEW_ITEM".to_string()));
+                } else {
+                    let immich_id = download_and_upload(
+                        pool,
+                        immich_client,
+                        gphoto_client,
+                        scan_result.media_items.get(gphoto_id).unwrap(),
+                    )
+                    .await?;
+                    linked_items.insert(gphoto_id.clone(), immich_id);
+                }
+            }
+            ElementLinkResult::Unknown => {
+                warn!("don't know what to do with {}", gphoto_id);
+            }
+        }
+    }
 
     let immich_associations: HashMap<_, _> = scan_result
         .associations
@@ -374,8 +376,9 @@ VALUES ($1, $2, $3, $4)"#,
             .collect();
         if immich_client.read_only {
             info!(
-                "will add to immich album {}: {:?}",
-                immich_album_id, immich_ids
+                "will add {} items to immich album {}",
+                immich_ids.len(),
+                immich_album_id,
             );
         } else {
             albums_api::add_assets_to_album(
@@ -467,11 +470,6 @@ async fn link_item(
     Ok(rv)
 }
 
-enum AlbumLink {
-    FoundDB(ImmichAlbumId),
-    FoundMetadata(ImmichAlbumId),
-    NotFound,
-}
 // Goes through all of the albums in gphotos that pass the filter f and are not linked with
 // an immich album and tries to link them. Linking is done based on the album name only.
 // TODO: this picks a random album id for albums that have the same title. Detect it at least
@@ -479,7 +477,7 @@ async fn link_album(
     pool: &Pool<Sqlite>,
     album_metadata: &gphotos_api::models::Album,
     immich_albums: &HashMap<String, Vec<ImmichAlbumId>>,
-) -> Result<AlbumLink> {
+) -> Result<ElementLinkResult<ImmichAlbumId>> {
     let gphoto_album_id = GPhotoAlbumId(album_metadata.id.clone().ok_or(anyhow!("missing id"))?);
     let album_title: String = album_metadata
         .title
@@ -494,7 +492,7 @@ async fn link_album(
             .map(|row| ImmichAlbumId(row.get("immich_id")))
     {
         debug!("album {album_title:?} ({gphoto_album_id}) exists in immich and we already know it has immich id {immich_album_id}");
-        return Ok(AlbumLink::FoundDB(immich_album_id));
+        return Ok(ElementLinkResult::ExistsInDB(immich_album_id));
     };
 
     if let Some(immich_album_id) = {
@@ -533,16 +531,16 @@ async fn link_album(
         .map(|row| ImmichAlbumId(row.get("immich_id")))
         {
             debug!("album titled {album_title:?} already exists in immich but is mapped to another album, creating a new one");
-            Ok(AlbumLink::NotFound)
+            Ok(ElementLinkResult::CreateNew)
         } else {
             // Preserve the mapping in the local db.
             save_album_link(pool, &gphoto_album_id, &immich_album_id).await?;
-            Ok(AlbumLink::FoundMetadata(immich_album_id))
+            Ok(ElementLinkResult::Found(immich_album_id))
         }
     } else {
         // Create the new album in immich
         debug!("album {album_title:?} ({gphoto_album_id}) does not exist in immich, creating it");
-        Ok(AlbumLink::NotFound)
+        Ok(ElementLinkResult::CreateNew)
     }
 }
 
@@ -828,7 +826,13 @@ async fn main() -> Result<()> {
     let gphoto_client = GPClient::new_from_file(&args.client_secret, &args.auth_token).await?;
 
     let scan_result = scan(&args, &multi, &gphoto_client).await?;
+    info!(
+        "scan result: media_items: {}, albums: {}",
+        scan_result.media_items.len(),
+        scan_result.albums.len()
+    );
     let search_result = search(&scan_result, &pool, &immich_client).await?;
+
     write(
         &search_result,
         &scan_result,
