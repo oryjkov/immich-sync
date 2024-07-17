@@ -4,7 +4,7 @@ use colored::Colorize;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
 use futures::pin_mut;
-use futures::StreamExt;
+use futures::stream::{self, StreamExt};
 use gphotos_api::models::{Album, MediaItem};
 use immich_api::apis::albums_api;
 use immich_api::apis::assets_api;
@@ -18,7 +18,8 @@ use lib::gpclient::GPClient;
 use lib::immich_client::ImmichClient;
 use lib::match_metadata::{compare_metadata, ImageData};
 use lib::types::*;
-use log::{debug, error, info, warn};
+use log::Level::{Debug, Warn};
+use log::{debug, error, info, log_enabled, warn};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::{HashMap, HashSet};
@@ -106,13 +107,41 @@ struct SearchResult {
     media_items: HashMap<GPhotoItemId, ElementLinkResult<ImmichItemId>>,
     albums: HashMap<GPhotoAlbumId, ElementLinkResult<ImmichAlbumId>>,
 }
+impl SearchResult {
+    fn log_summary(&self) {
+        let mut items_summary: HashMap<String, usize> = HashMap::new();
+        for (_, e) in &self.media_items {
+            let group = match e {
+                ElementLinkResult::Unknown(_) => "skipped",
+                ElementLinkResult::Found(_) => "found metadata",
+                ElementLinkResult::ExistsInDB(_) => "found db",
+                ElementLinkResult::CreateNew => "create_new",
+            };
+            *items_summary.entry(group.to_string()).or_default() += 1;
+        }
+        let mut albums_summary: HashMap<String, usize> = HashMap::new();
+        for (_, e) in &self.albums {
+            let group = match e {
+                ElementLinkResult::Unknown(_) => "skipped",
+                ElementLinkResult::Found(_) => "found metadata",
+                ElementLinkResult::ExistsInDB(_) => "found db",
+                ElementLinkResult::CreateNew => "create_new",
+            };
+            *albums_summary.entry(group.to_string()).or_default() += 1;
+        }
+        info!(
+            "search results: items: {:?}, albums: {:?}",
+            items_summary, albums_summary
+        );
+    }
+}
 
 #[derive(Debug)]
 enum ElementLinkResult<LinkedType> {
     ExistsInDB(LinkedType), // Element found in the db
     Found(LinkedType),      // Element found based on metadata, should record in the db
     CreateNew,              // Element not found, should create it
-    Unknown,                // IDK!
+    Unknown(String),        // IDK!
 }
 
 async fn scan_one_album(
@@ -223,31 +252,32 @@ async fn search(
     let mut result = SearchResult::default();
     // Find what we can in immich/local db and establish links. What can't be found will be either
     // skipped or created (in the stage that follows)
-    for (gphoto_id, media_item) in &scan_result.media_items {
-        let res = link_item(pool, immich_client, media_item).await?;
-        match res {
-            LookupResult::MatchedUniqueDB(immich_id) => {
-                result
-                    .media_items
-                    .insert(gphoto_id.clone(), ElementLinkResult::ExistsInDB(immich_id));
-            }
-            LookupResult::MatchedUnique(immich_id) => {
-                result
-                    .media_items
-                    .insert(gphoto_id.clone(), ElementLinkResult::Found(immich_id));
-            }
-            LookupResult::NotFound => {
-                result
-                    .media_items
-                    .insert(gphoto_id.clone(), ElementLinkResult::CreateNew);
-            }
-            _ => {
-                result
-                    .media_items
-                    .insert(gphoto_id.clone(), ElementLinkResult::Unknown);
-            }
+    result.media_items = stream::iter(scan_result.media_items.iter().map(
+        |(gphoto_id, media_item)| async move {
+            (gphoto_id, link_item(pool, immich_client, media_item).await)
+        },
+    ))
+    .buffer_unordered(10)
+    .collect::<Vec<_>>()
+    .await
+    .into_iter()
+    .filter_map(|(gphoto_id, link_res)| match link_res {
+        Ok(res) => Some((gphoto_id, res)),
+        Err(e) => {
+            error!("lookup failed: {:?}", e);
+            None
         }
-    }
+    })
+    .map(|(gphoto_id, (link_res, message))| {
+        let x = match link_res {
+            LookupResult::MatchedUniqueDB(immich_id) => ElementLinkResult::ExistsInDB(immich_id),
+            LookupResult::MatchedUnique(immich_id) => ElementLinkResult::Found(immich_id),
+            LookupResult::NotFound => ElementLinkResult::CreateNew,
+            _ => ElementLinkResult::Unknown(message),
+        };
+        (gphoto_id.clone(), x)
+    })
+    .collect();
 
     let immich_albums = get_immich_albums(&immich_client).await?;
     for (gphoto_album_id, gphoto_album) in &scan_result.albums {
@@ -293,7 +323,7 @@ async fn write(
                     linked_albums.insert(gphoto_id.clone(), immich_id);
                 }
             }
-            ElementLinkResult::Unknown => {
+            ElementLinkResult::Unknown(_) => {
                 error!("should not happen for albums");
             }
         }
@@ -350,8 +380,18 @@ VALUES ($1, $2, $3, $4)"#,
                     linked_items.insert(gphoto_id.clone(), immich_id);
                 }
             }
-            ElementLinkResult::Unknown => {
-                warn!("don't know what to do with {}", gphoto_id);
+            ElementLinkResult::Unknown(message) => {
+                if log_enabled!(Warn) {
+                    let metadata = scan_result.media_items.get(gphoto_id).unwrap();
+                    warn!(
+                        "don't know what to do with {} {}",
+                        metadata.filename.clone().unwrap_or_default(),
+                        metadata.product_url.clone().unwrap_or_default()
+                    );
+                    if !message.is_empty() {
+                        warn!("debug message: {}", message);
+                    }
+                }
             }
         }
     }
@@ -401,18 +441,20 @@ async fn link_item(
     pool: &Pool<Sqlite>,
     immich_client: &ImmichClient,
     gphoto_item: &MediaItem,
-) -> Result<LookupResult> {
+) -> Result<(LookupResult, String)> {
     let gphoto_id = GPhotoItemId(gphoto_item.id.as_ref().unwrap().clone());
     let filename = gphoto_item.filename.as_ref().unwrap();
+    let mut message = "".to_string();
 
     let local_match = sqlx::query(r#"SELECT immich_id FROM item_item_links WHERE gphoto_id = $1"#)
         .bind(&gphoto_id.0)
         .fetch_optional(pool)
         .await?;
     if let Some(immich_id) = local_match {
-        return Ok(LookupResult::MatchedUniqueDB(ImmichItemId(
-            immich_id.get("immich_id"),
-        )));
+        return Ok((
+            LookupResult::MatchedUniqueDB(ImmichItemId(immich_id.get("immich_id"))),
+            message,
+        ));
     }
 
     let gphoto_metadata: ImageData = gphoto_item
@@ -450,24 +492,28 @@ async fn link_item(
                 _ => LookupResult::MatchedUnique(ImmichItemId(immich_item.id.clone())),
             };
         } else {
-            debug!(
-                "{}: No metadata match! gphoto_id: {}",
-                filename.yellow(),
-                gphoto_id
-            );
-            debug!("{} {:?}", "gphoto metadata:".red(), gphoto_metadata);
-            debug!("{} {:?}", "immich metadata:".green(), immich_metadata);
-            debug!(
-                "raw gphoto metadata: {}",
-                serde_json::to_string(gphoto_item.media_metadata.as_ref().unwrap()).unwrap()
-            );
-            debug!(
-                "raw immich metadata: {}",
-                serde_json::to_string(&immich_item).unwrap()
-            )
+            if log_enabled!(Debug) {
+                message.push_str(&format!(
+                    "{}: No metadata match! gphoto_id: {}\n",
+                    filename.yellow(),
+                    gphoto_id
+                ));
+                message.push_str(&format!(
+                    "{} {:?}\n{} {:?}\n",
+                    "gphoto metadata:".red(),
+                    gphoto_metadata,
+                    "immich metadata:".green(),
+                    immich_metadata
+                ));
+                message.push_str(&format!(
+                    "raw gphoto metadata: {}\nraw immich metadata: {}",
+                    serde_json::to_string(gphoto_item.media_metadata.as_ref().unwrap()).unwrap(),
+                    serde_json::to_string(&immich_item).unwrap()
+                ));
+            }
         }
     }
-    Ok(rv)
+    Ok((rv, message))
 }
 
 // Goes through all of the albums in gphotos that pass the filter f and are not linked with
@@ -832,6 +878,7 @@ async fn main() -> Result<()> {
         scan_result.albums.len()
     );
     let search_result = search(&scan_result, &pool, &immich_client).await?;
+    search_result.log_summary();
 
     write(
         &search_result,
