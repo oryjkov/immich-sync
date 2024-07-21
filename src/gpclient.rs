@@ -358,12 +358,6 @@ pub async fn get_auth(client_secret: &str, auth_file: &str) -> anyhow::Result<()
         (code, state)
     };
 
-    println!("Google returned the following code:\n{}\n", code.secret());
-    println!(
-        "Google returned the following state:\n{} (expected `{}`)\n",
-        state.secret(),
-        csrf_state.secret()
-    );
     if state.secret() != csrf_state.secret() {
         return Err(anyhow::anyhow!("secrets do not match"));
     }
