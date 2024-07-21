@@ -167,11 +167,12 @@ async fn scan_one_album(
 
     let mut new_items = false;
     for (gphoto_id, _) in &album_items {
-        if sqlx::query(r#"SELECT immich_id FROM item_item_links WHERE gphoto_id = $1"#)
+        // Early exit needs to know when there is at least one item that is not in the local db.
+        if sqlx::query(r#"SELECT immich_id FROM item_item_links WHERE gphoto_id  $1"#)
             .bind(&gphoto_id.0)
             .fetch_optional(pool)
             .await?
-            .is_some()
+            .is_none()
         {
             new_items = true;
             break;
