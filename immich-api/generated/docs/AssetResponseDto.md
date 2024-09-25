@@ -30,7 +30,7 @@ Name | Type | Description | Notes
 **resized** | **bool** |  | 
 **smart_info** | Option<[**models::SmartInfoResponseDto**](SmartInfoResponseDto.md)> |  | [optional]
 **stack** | Option<[**Vec<models::AssetResponseDto>**](AssetResponseDto.md)> |  | [optional]
-**stack_count** | Option<**i32**> |  | 
+**stack_count** | Option<**i32**> |  | [optional]
 **stack_parent_id** | Option<**String**> |  | [optional]
 **tags** | Option<[**Vec<models::TagResponseDto>**](TagResponseDto.md)> |  | [optional]
 **thumbhash** | Option<**String**> |  | 

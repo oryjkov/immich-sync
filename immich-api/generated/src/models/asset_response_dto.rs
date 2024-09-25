@@ -67,8 +67,8 @@ pub struct AssetResponseDto {
     pub smart_info: Option<Box<models::SmartInfoResponseDto>>,
     #[serde(rename = "stack", skip_serializing_if = "Option::is_none")]
     pub stack: Option<Vec<models::AssetResponseDto>>,
-    #[serde(rename = "stackCount", deserialize_with = "Option::deserialize")]
-    pub stack_count: Option<i32>,
+    #[serde(rename = "stackCount", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
+    pub stack_count: Option<Option<i32>>,
     #[serde(rename = "stackParentId", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
     pub stack_parent_id: Option<Option<String>>,
     #[serde(rename = "tags", skip_serializing_if = "Option::is_none")]
@@ -84,7 +84,7 @@ pub struct AssetResponseDto {
 }
 
 impl AssetResponseDto {
-    pub fn new(checksum: String, device_asset_id: String, device_id: String, duration: String, file_created_at: String, file_modified_at: String, has_metadata: bool, id: String, is_archived: bool, is_favorite: bool, is_offline: bool, is_trashed: bool, local_date_time: String, original_file_name: String, original_path: String, owner_id: String, resized: bool, stack_count: Option<i32>, thumbhash: Option<String>, r#type: models::AssetTypeEnum, updated_at: String) -> AssetResponseDto {
+    pub fn new(checksum: String, device_asset_id: String, device_id: String, duration: String, file_created_at: String, file_modified_at: String, has_metadata: bool, id: String, is_archived: bool, is_favorite: bool, is_offline: bool, is_trashed: bool, local_date_time: String, original_file_name: String, original_path: String, owner_id: String, resized: bool, thumbhash: Option<String>, r#type: models::AssetTypeEnum, updated_at: String) -> AssetResponseDto {
         AssetResponseDto {
             checksum,
             device_asset_id,
@@ -112,7 +112,7 @@ impl AssetResponseDto {
             resized,
             smart_info: None,
             stack: None,
-            stack_count,
+            stack_count: None,
             stack_parent_id: None,
             tags: None,
             thumbhash,
